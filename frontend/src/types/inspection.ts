@@ -43,7 +43,7 @@ export interface InspectionResult {
 
   ocrLines: OcrLine[];
   anomaly: AnomalyView;
-  capturedImagePath?: string;
+  capturedImageBase64?: string | null;
 }
 
 export type ScanStatus = "idle" | "scanning" | "paused" | "finished";

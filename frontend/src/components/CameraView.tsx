@@ -3,9 +3,12 @@ import type { BoundingBox } from "../types/inspection";
 interface CameraViewProps {
   boxes: BoundingBox[];
   active: boolean;
+  capturedImageBase64?: string | null;
 }
 
-export default function CameraView({ boxes, active }: CameraViewProps) {
+export default function CameraView({ boxes, active, capturedImageBase64 }: CameraViewProps) {
+  const hasImage = !!capturedImageBase64;
+
   return (
     <div
 style={{
@@ -15,25 +18,43 @@ style={{
   aspectRatio: "16 / 9",
   borderRadius: 14,
   overflow: "hidden",
-  background:
-    "radial-gradient(circle at 30% 20%, #23303f 0%, #151c26 55%, #0e131a 100%)",
+  background: hasImage
+    ? "#0e131a"
+    : "radial-gradient(circle at 30% 20%, #23303f 0%, #151c26 55%, #0e131a 100%)",
   border: "1px solid var(--vq-border)",
 }} >
-      {/* subtle industrial grid to suggest a camera feed, not a real image */}
-      <svg
-        width="100%"
-        height="100%"
-        style={{ position: "absolute", inset: 0, opacity: 0.25 }}
-      >
-        <defs>
-          <pattern id="vq-grid" width="40" height="40" patternUnits="userSpaceOnUse">
-            <path d="M40 0H0V40" fill="none" stroke="#3a4a5c" strokeWidth="1" />
-          </pattern>
-        </defs>
-        <rect width="100%" height="100%" fill="url(#vq-grid)" />
-      </svg>
+      {/* Captured camera frame */}
+      {hasImage && (
+        <img
+          src={`data:image/png;base64,${capturedImageBase64}`}
+          alt="Captured camera frame"
+          style={{
+            position: "absolute",
+            inset: 0,
+            width: "100%",
+            height: "100%",
+            objectFit: "contain",
+          }}
+        />
+      )}
 
-      {!active && boxes.length === 0 && (
+      {/* Grid placeholder when no image */}
+      {!hasImage && (
+        <svg
+          width="100%"
+          height="100%"
+          style={{ position: "absolute", inset: 0, opacity: 0.25 }}
+        >
+          <defs>
+            <pattern id="vq-grid" width="40" height="40" patternUnits="userSpaceOnUse">
+              <path d="M40 0H0V40" fill="none" stroke="#3a4a5c" strokeWidth="1" />
+            </pattern>
+          </defs>
+          <rect width="100%" height="100%" fill="url(#vq-grid)" />
+        </svg>
+      )}
+
+      {!active && boxes.length === 0 && !hasImage && (
         <div
           style={{
             position: "absolute",

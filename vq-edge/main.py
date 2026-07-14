@@ -286,6 +286,8 @@ def build_inspection_payload(image_path: str, combined_result: dict[str, Any]) -
 				}
 			)
 
+	captured_image_b64 = _encode_image_to_base64_png(image_bgr)
+
 	return {
 		"total": total,
 		"accepted": accepted,
@@ -299,7 +301,7 @@ def build_inspection_payload(image_path: str, combined_result: dict[str, Any]) -
 			"count": anomaly_count,
 			"mapImageBase64": anomaly_map_b64,
 		},
-		"capturedImagePath": image_path,
+		"capturedImageBase64": captured_image_b64,
 	}
 
 

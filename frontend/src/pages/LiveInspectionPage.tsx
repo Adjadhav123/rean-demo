@@ -23,6 +23,7 @@ export default function LiveInspectionPage() {
       count: 0,
       mapImageBase64: null,
     },
+    capturedImageBase64: null,
   });
   const [cameraStatus, setCameraStatus] = useState<"ready" | "waiting" | "detecting" | "not_ready">("waiting");
   const [cameraActive, setCameraActive] = useState(false);
@@ -199,6 +200,7 @@ export default function LiveInspectionPage() {
   <CameraView
     boxes={result.boxes}
     active={cameraActive}
+    capturedImageBase64={result.capturedImageBase64}
   />
 
   <div
