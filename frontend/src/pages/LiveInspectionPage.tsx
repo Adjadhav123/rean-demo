@@ -40,8 +40,17 @@ export default function LiveInspectionPage() {
     try {
       const inspectionResult = await startInspection();
       setResult(inspectionResult);
-      setCameraStatus("ready");
-      setCameraActive(true);
+
+      if (inspectionResult.error) {
+        // Pipeline returned partial results with an error (e.g. camera disconnected)
+        message.warning(inspectionResult.error);
+        setCameraStatus("not_ready");
+        setCameraActive(!!inspectionResult.capturedImageBase64);
+        setStatus("idle");
+      } else {
+        setCameraStatus("ready");
+        setCameraActive(true);
+      }
     } catch (err: any) {
       message.error(err?.response?.data?.error || "Failed to start inspection");
       setStatus("idle");

@@ -306,21 +306,64 @@ def build_inspection_payload(image_path: str, combined_result: dict[str, Any]) -
 
 
 def run_hardcoded_pipeline() -> dict[str, Any]:
-	image_path = capture_image_from_camera(
-		camera_index=CAMERA_INDEX,
-		output_path=CAPTURED_IMAGE_PATH,
-	)
+	# --- Capture image from camera ---
+	try:
+		image_path = capture_image_from_camera(
+			camera_index=CAMERA_INDEX,
+			output_path=CAPTURED_IMAGE_PATH,
+		)
+	except (RuntimeError, OSError) as exc:
+		print(f"Camera capture failed: {exc}")
+		return {
+			"total": 0,
+			"accepted": 0,
+			"rejected": 0,
+			"wrongText": [],
+			"boxes": [],
+			"ocrLines": [],
+			"anomaly": {
+				"label": 0,
+				"score": 0.0,
+				"count": 0,
+				"mapImageBase64": None,
+			},
+			"capturedImageBase64": None,
+			"error": f"Camera not available (index {CAMERA_INDEX}): {exc}",
+		}
 
-	combined_result = run_pipeline(
-		image_path=image_path,
-		anomaly_model_path=ANOMALY_MODEL_PATH,
-		rfdetr_model_path=RFDETR_MODEL_PATH,
-		ocr_model_dir=OCR_MODEL_DIR,
-		anomaly_threshold=ANOMALY_THRESHOLD,
-		mask_threshold=MASK_THRESHOLD,
-		min_area=MIN_AREA,
-		rfdetr_threshold=RFDETR_THRESHOLD,
-	)
+	# --- Run ML pipeline ---
+	try:
+		combined_result = run_pipeline(
+			image_path=image_path,
+			anomaly_model_path=ANOMALY_MODEL_PATH,
+			rfdetr_model_path=RFDETR_MODEL_PATH,
+			ocr_model_dir=OCR_MODEL_DIR,
+			anomaly_threshold=ANOMALY_THRESHOLD,
+			mask_threshold=MASK_THRESHOLD,
+			min_area=MIN_AREA,
+			rfdetr_threshold=RFDETR_THRESHOLD,
+		)
+	except Exception as exc:
+		print(f"Pipeline error (returning captured image only): {exc}")
+		# Still return the captured image even if ML models fail
+		image_bgr = cv2.imread(image_path)
+		captured_b64 = _encode_image_to_base64_png(image_bgr) if image_bgr is not None else None
+		return {
+			"total": 0,
+			"accepted": 0,
+			"rejected": 0,
+			"wrongText": [],
+			"boxes": [],
+			"ocrLines": [],
+			"anomaly": {
+				"label": 0,
+				"score": 0.0,
+				"count": 0,
+				"mapImageBase64": None,
+			},
+			"capturedImageBase64": captured_b64,
+			"error": f"Pipeline error: {exc}",
+		}
 
 	return build_inspection_payload(
 		image_path=image_path,
@@ -335,10 +378,7 @@ def health() -> dict[str, str]:
 
 @app.post("/inspect/start")
 def inspect_start() -> dict[str, Any]:
-	try:
-		return run_hardcoded_pipeline()
-	except Exception as exc:
-		raise HTTPException(status_code=500, detail=str(exc)) from exc
+	return run_hardcoded_pipeline()
 
 
 @app.post("/inspect/pause")
