@@ -17,6 +17,10 @@ from torchvision.transforms.v2 import Resize
 from rembg import remove, new_session
 
 
+import pathlib
+pathlib.PosixPath = pathlib.WindowsPath
+
+
 from device_manager import DeviceManager
 
 ANOMALY_IMAGE_SIZE = 256

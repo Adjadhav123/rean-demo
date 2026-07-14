@@ -1,70 +1,125 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import { Button, Card, message, Tag } from "antd";
 import { CheckCircleFilled, PauseCircleFilled, PlayCircleFilled } from "@ant-design/icons";
 import StatusIndicator from "../components/StatusIndicator";
 import SummaryCard from "../components/SummaryCard";
 import WrongTextCard from "../components/WrongTextCard";
 import CameraView from "../components/CameraView";
-import { startInspection, pauseInspection, finishInspection } from "../services/api";
+import {
+  startInspection,
+  pauseInspection,
+  resumeInspection,
+  finishInspection,
+  getLatestInspection,
+} from "../services/api";
 import type { InspectionResult, ScanStatus } from "../types/inspection";
+
+const POLL_INTERVAL_MS = 1500;
+
+const EMPTY_RESULT: InspectionResult = {
+  total: 0,
+  accepted: 0,
+  rejected: 0,
+  wrongText: [],
+  boxes: [],
+  ocrLines: [],
+  anomaly: {
+    label: 0,
+    score: 0,
+    count: 0,
+    mapImageBase64: null,
+  },
+  capturedImageBase64: null,
+};
 
 export default function LiveInspectionPage() {
   const [status, setStatus] = useState<ScanStatus>("idle");
-  const [result, setResult] = useState<InspectionResult>({
-    total: 0,
-    accepted: 0,
-    rejected: 0,
-    wrongText: [],
-    boxes: [],
-    ocrLines: [],
-    anomaly: {
-      label: 0,
-      score: 0,
-      count: 0,
-      mapImageBase64: null,
-    },
-    capturedImageBase64: null,
-  });
+  const [result, setResult] = useState<InspectionResult>(EMPTY_RESULT);
   const [cameraStatus, setCameraStatus] = useState<"ready" | "waiting" | "detecting" | "not_ready">("waiting");
   const [cameraActive, setCameraActive] = useState(false);
-  const [isProcessing, setIsProcessing] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
+  // -----------------------------------------------------------------------
+  // Polling: fetch the latest result from the backend every POLL_INTERVAL_MS
+  // -----------------------------------------------------------------------
+  const stopPolling = useCallback(() => {
+    if (pollRef.current) {
+      clearInterval(pollRef.current);
+      pollRef.current = null;
+    }
+  }, []);
+
+  const startPolling = useCallback(() => {
+    stopPolling();
+
+    const poll = async () => {
+      try {
+        const data = await getLatestInspection();
+        const backendStatus: string = data.status;
+        const latestResult: InspectionResult | null = data.result;
+
+        if (latestResult) {
+          setResult(latestResult);
+          setCameraActive(!!latestResult.capturedImageBase64);
+
+          if (latestResult.error) {
+            setCameraStatus("not_ready");
+          } else {
+            setCameraStatus("ready");
+          }
+        }
+
+        // Sync frontend status with backend status
+        if (backendStatus === "paused") {
+          setStatus("paused");
+          setCameraStatus("waiting");
+          // Keep polling so we can show the frozen frame, but at a slower rate
+        } else if (backendStatus === "finished" || backendStatus === "idle") {
+          setStatus(backendStatus === "idle" ? "idle" : "finished");
+          stopPolling();
+        }
+      } catch {
+        // Silently retry on next interval (backend might be busy)
+      }
+    };
+
+    // First poll immediately
+    void poll();
+    pollRef.current = setInterval(poll, POLL_INTERVAL_MS);
+  }, [stopPolling]);
+
+  // Clean up polling on unmount
+  useEffect(() => {
+    return () => stopPolling();
+  }, [stopPolling]);
+
+  // -----------------------------------------------------------------------
+  // Handlers
+  // -----------------------------------------------------------------------
   async function handleStart() {
-    if (status === "scanning" || isProcessing) return;
-
-    setStatus("scanning");
-    setCameraActive(false);
-    setCameraStatus("detecting");
-    setIsProcessing(true);
+    if (status === "scanning") return;
 
     try {
-      const inspectionResult = await startInspection();
-      setResult(inspectionResult);
+      setStatus("scanning");
+      setCameraStatus("detecting");
+      setResult(EMPTY_RESULT);
 
-      if (inspectionResult.error) {
-        // Pipeline returned partial results with an error (e.g. camera disconnected)
-        message.warning(inspectionResult.error);
-        setCameraStatus("not_ready");
-        setCameraActive(!!inspectionResult.capturedImageBase64);
-        setStatus("idle");
+      if (status === "paused") {
+        // Resume from paused state
+        await resumeInspection();
       } else {
-        setCameraStatus("ready");
-        setCameraActive(true);
+        // Fresh start
+        await startInspection();
       }
+
+      // Start polling for results
+      startPolling();
     } catch (err: any) {
       message.error(err?.response?.data?.error || "Failed to start inspection");
       setStatus("idle");
       setCameraStatus("not_ready");
-    } finally {
-      setIsProcessing(false);
     }
   }
-
-  useEffect(() => {
-    void handleStart();
-    // Run once on page entry so inspection starts directly.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
 
   async function handlePause() {
     if (status !== "scanning") return;
@@ -72,6 +127,7 @@ export default function LiveInspectionPage() {
       await pauseInspection();
       setStatus("paused");
       setCameraStatus("waiting");
+      // Keep polling so we keep showing the latest result
     } catch (err: any) {
       message.error(err?.response?.data?.error || "Failed to pause inspection");
     }
@@ -82,6 +138,7 @@ export default function LiveInspectionPage() {
       await finishInspection();
       setStatus("finished");
       setCameraStatus("not_ready");
+      stopPolling();
       message.success("Inspection finished");
     } catch (err: any) {
       message.error(err?.response?.data?.error || "Failed to finish inspection");
@@ -92,7 +149,7 @@ export default function LiveInspectionPage() {
     status === "scanning"
       ? "SCAN STARTED"
       : status === "paused"
-      ? "SCAN PAUSED"
+      ? "SCAN PAUSED — ANOMALY DETECTED"
       : status === "finished"
       ? "SCAN FINISHED"
       : "SCAN IDLE";
@@ -330,7 +387,7 @@ export default function LiveInspectionPage() {
                   color: '#fff',
                 }}
               >
-                Start
+                {status === "paused" ? "Resume" : "Start"}
               </Button>
             </div>
           </div>

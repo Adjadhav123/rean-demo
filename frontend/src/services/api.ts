@@ -1,4 +1,4 @@
-﻿import axios from "axios";
+import axios from "axios";
 
 // Relative baseURL: Vite dev server proxies /api to the Express backend
 // (see vite.config.ts). In production, serve the frontend behind the same
@@ -17,7 +17,17 @@ export async function pauseInspection() {
   return res.data;
 }
 
+export async function resumeInspection() {
+  const res = await apiClient.post("/inspect/resume");
+  return res.data;
+}
+
 export async function finishInspection() {
   const res = await apiClient.post("/inspect/finish");
+  return res.data;
+}
+
+export async function getLatestInspection() {
+  const res = await apiClient.get("/inspect/latest");
   return res.data;
 }
