@@ -1,0 +1,49 @@
+export interface WrongTextItem {
+  text: string;
+  reason: string;
+}
+
+export interface OcrLine {
+  text: string;
+  score: number | null;
+}
+
+export interface AnomalyView {
+  label: number;
+  score: number;
+  count: number;
+  mapImageBase64: string | null;
+}
+
+export interface BoundingBox {
+  id: string;
+  text: string;
+  status: "correct" | "wrong";
+  // Percentage-based coordinates (0-100) relative to the camera view,
+  // so overlays scale with the image regardless of rendered size.
+  top: number;
+  left: number;
+  width: number;
+  height: number;
+}
+
+export interface InspectionResult {
+  total: number;
+  accepted: number;
+  rejected: number;
+
+  // This comes from the backend but will NOT be displayed in the UI.
+  correctText?: string[];
+
+  // This will be displayed in the UI.
+  wrongText: WrongTextItem[];
+
+  // Bounding boxes received from Python.
+  boxes: BoundingBox[];
+
+  ocrLines: OcrLine[];
+  anomaly: AnomalyView;
+  capturedImagePath?: string;
+}
+
+export type ScanStatus = "idle" | "scanning" | "paused" | "finished";

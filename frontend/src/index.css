@@ -1,0 +1,43 @@
+:root {
+  --vq-blue: #1568e0;
+  --vq-blue-dark: #0d4bb3;
+  --vq-green: #1a9e4a;
+  --vq-green-dark: #147a39;
+  --vq-red: #d4380d;
+  --vq-bg: #f5f7fa;
+  --vq-panel: #ffffff;
+  --vq-border: #e2e8f0;
+  --vq-text: #1a2233;
+  --vq-text-muted: #64748b;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  margin: 0;
+  background: var(--vq-bg);
+  color: var(--vq-text);
+  font-family: "Segoe UI", "Inter", -apple-system, BlinkMacSystemFont, Roboto, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Slightly smaller base font to reduce vertical layout and avoid scrolling */
+body {
+  font-size: 14px;
+}
+
+.vq-eyebrow {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--vq-text-muted);
+}
