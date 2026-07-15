@@ -147,12 +147,29 @@ def _encode_image_to_base64_png(image: np.ndarray | None) -> str | None:
 
 
 def _extract_ocr_lines(node: Any, min_confidence: float = 0.0) -> list[dict[str, Any]]:
+    """Walk OCR results and return [{text, score, box}, ...]."""
     lines: list[dict[str, Any]] = []
+
+    def _parse_box(raw_box: Any) -> list[int] | None:
+        """Convert a polygon or rect box to [x1, y1, x2, y2]."""
+        try:
+            arr = np.array(raw_box)
+            if arr.ndim == 2:
+                return [
+                    int(arr[:, 0].min()), int(arr[:, 1].min()),
+                    int(arr[:, 0].max()), int(arr[:, 1].max()),
+                ]
+            if arr.ndim == 1 and len(arr) == 4:
+                return list(map(int, arr))
+        except Exception:
+            pass
+        return None
 
     def walk(value: Any) -> None:
         if isinstance(value, dict):
             rec_texts = value.get("rec_texts")
             rec_scores = value.get("rec_scores")
+            rec_boxes = value.get("rec_boxes")
             if isinstance(rec_texts, list):
                 for idx, text in enumerate(rec_texts):
                     if not isinstance(text, str):
@@ -163,7 +180,10 @@ def _extract_ocr_lines(node: Any, min_confidence: float = 0.0) -> list[dict[str,
                             score = float(rec_scores[idx])
                         except Exception:
                             score = None
-                    lines.append({"text": text, "score": score})
+                    box = None
+                    if isinstance(rec_boxes, list) and idx < len(rec_boxes):
+                        box = _parse_box(rec_boxes[idx])
+                    lines.append({"text": text, "score": score, "box": box})
 
             if isinstance(value.get("text"), str):
                 score = value.get("score")
@@ -171,7 +191,7 @@ def _extract_ocr_lines(node: Any, min_confidence: float = 0.0) -> list[dict[str,
                     score = float(score) if score is not None else None
                 except Exception:
                     score = None
-                lines.append({"text": value["text"], "score": score})
+                lines.append({"text": value["text"], "score": score, "box": None})
 
             for child in value.values():
                 walk(child)
@@ -193,7 +213,7 @@ def _extract_ocr_lines(node: Any, min_confidence: float = 0.0) -> list[dict[str,
         if key in seen:
             continue
         seen.add(key)
-        deduped.append({"text": text, "score": line.get("score")})
+        deduped.append({"text": text, "score": line.get("score"), "box": line.get("box")})
     if min_confidence > 0:
         deduped = [line for line in deduped if line.get("score") is not None and line["score"] >= min_confidence]
     return deduped
@@ -260,7 +280,13 @@ def _build_payload(
     part_result: dict | None,
     ocr_raw: Any,
 ) -> dict[str, Any]:
-    """Build a JSON-serialisable payload from pipeline results."""
+    """
+    Build a JSON-serialisable payload from pipeline results.
+
+    The displayed image is the **crop** of the detected part with:
+      - Anomaly heatmap overlay (when anomaly detected)
+      - Green bounding boxes around each OCR-detected text region
+    """
     image_h, image_w = image_bgr.shape[:2]
 
     anomaly = anomaly_result or {}
@@ -269,42 +295,64 @@ def _build_payload(
     anomaly_score = float(anomaly.get("score", 0.0) or 0.0)
     anomaly_label = int(anomaly.get("label", 0) or 0)
 
-    # Annotate anomaly heatmap and bounding boxes directly on the captured image
-    annotated = image_bgr.copy()
-    mask = anomaly.get("mask")
-    if isinstance(mask, np.ndarray) and mask.size > 0 and anomaly_count > 0:
-        if len(mask.shape) == 3:
-            mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
-        if mask.shape[:2] != (image_h, image_w):
-            mask = cv2.resize(mask, (image_w, image_h), interpolation=cv2.INTER_LINEAR)
-        heatmap = cv2.applyColorMap(mask.astype(np.uint8), cv2.COLORMAP_JET)
-
-        # Only overlay heatmap where anomaly values are significant
-        # This prevents the background from glowing blue/red
-        alpha = np.zeros((image_h, image_w), dtype=np.float32)
-        significant = mask.astype(np.float32) > 30
-        alpha[significant] = 0.45
-        alpha_3ch = np.stack([alpha] * 3, axis=-1)
-        annotated = (
-            annotated.astype(np.float32) * (1 - alpha_3ch)
-            + heatmap.astype(np.float32) * alpha_3ch
-        ).astype(np.uint8)
-
-        # Draw anomaly region bounding boxes on the image
-        for ar in anomaly_results:
-            bbox = ar.get("bbox")
-            if bbox and len(bbox) == 4:
-                x1a, y1a, x2a, y2a = [int(v) for v in bbox]
-                cv2.rectangle(annotated, (x1a, y1a), (x2a, y2a), (0, 0, 255), 2)
-                conf = ar.get("confidence", 0)
-                cv2.putText(
-                    annotated, f"Anomaly {conf:.2f}",
-                    (x1a, max(y1a - 8, 14)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2,
-                )
-
     ocr_lines = _extract_ocr_lines(ocr_raw, min_confidence=OCR_MIN_CONFIDENCE)
 
+    # ---- Build the annotated crop image ----
+    has_crop = (
+        isinstance(part_result, dict)
+        and part_result.get("crop") is not None
+        and part_result["crop"].size > 0
+    )
+
+    if has_crop:
+        crop = part_result["crop"]
+        part_bbox = part_result.get("bbox")  # (x1, y1, x2, y2) in full-frame coords
+        annotated = crop.copy()
+        crop_h, crop_w = annotated.shape[:2]
+
+        # --- Anomaly heatmap on crop (only when anomaly detected) ---
+        mask = anomaly.get("mask")
+        if isinstance(mask, np.ndarray) and mask.size > 0 and anomaly_count > 0:
+            if len(mask.shape) == 3:
+                mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+            if mask.shape[:2] != (image_h, image_w):
+                mask = cv2.resize(mask, (image_w, image_h), interpolation=cv2.INTER_LINEAR)
+
+            # Crop the anomaly map to the detected part region
+            px1, py1, px2, py2 = [int(v) for v in part_bbox]
+            mask_crop = mask[py1:py2, px1:px2]
+            if mask_crop.shape[:2] != (crop_h, crop_w):
+                mask_crop = cv2.resize(mask_crop, (crop_w, crop_h), interpolation=cv2.INTER_LINEAR)
+
+            heatmap = cv2.applyColorMap(mask_crop.astype(np.uint8), cv2.COLORMAP_JET)
+
+            # Per-pixel alpha — only overlay where anomaly values are significant
+            alpha = np.zeros((crop_h, crop_w), dtype=np.float32)
+            alpha[mask_crop.astype(np.float32) > 30] = 0.45
+            alpha_3ch = np.stack([alpha] * 3, axis=-1)
+            annotated = (
+                annotated.astype(np.float32) * (1 - alpha_3ch)
+                + heatmap.astype(np.float32) * alpha_3ch
+            ).astype(np.uint8)
+
+        # --- Green bounding boxes for OCR text ---
+        for line in ocr_lines:
+            box = line.get("box")
+            if box and len(box) == 4:
+                bx1, by1, bx2, by2 = [int(v) for v in box]
+                cv2.rectangle(annotated, (bx1, by1), (bx2, by2), (0, 255, 0), 2)
+                cv2.putText(
+                    annotated, line["text"],
+                    (bx1, max(by1 - 5, 12)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1,
+                )
+
+        captured_image_b64 = _encode_image_to_base64_png(annotated)
+    else:
+        # No crop available — show the raw camera frame
+        captured_image_b64 = _encode_image_to_base64_png(image_bgr)
+
+    # ---- Compute summary stats ----
     total = len(ocr_lines)
     if total == 0 and anomaly_count > 0:
         total = anomaly_count
@@ -318,33 +366,16 @@ def _build_payload(
             "reason": f"score={anomaly_score:.3f}",
         })
 
-    boxes: list[dict[str, Any]] = []
-    if isinstance(part_result, dict):
-        bbox = part_result.get("bbox")
-        if isinstance(bbox, (list, tuple)) and len(bbox) == 4 and image_w > 0 and image_h > 0:
-            x1, y1, x2, y2 = [int(v) for v in bbox]
-            bw = max(0, x2 - x1)
-            bh = max(0, y2 - y1)
-            box_label = ocr_lines[0]["text"] if ocr_lines else "Detected Part"
-            boxes.append({
-                "id": "part-1",
-                "text": box_label,
-                "status": "wrong" if anomaly_count > 0 else "correct",
-                "top": (y1 / image_h) * 100.0,
-                "left": (x1 / image_w) * 100.0,
-                "width": (bw / image_w) * 100.0,
-                "height": (bh / image_h) * 100.0,
-            })
-
-    captured_image_b64 = _encode_image_to_base64_png(annotated)
+    # Strip internal box coords before sending to frontend
+    frontend_ocr = [{"text": l["text"], "score": l.get("score")} for l in ocr_lines]
 
     return {
         "total": total,
         "accepted": accepted,
         "rejected": rejected,
         "wrongText": wrong_text,
-        "boxes": boxes,
-        "ocrLines": ocr_lines,
+        "boxes": [],
+        "ocrLines": frontend_ocr,
         "anomaly": {
             "label": anomaly_label,
             "score": anomaly_score,

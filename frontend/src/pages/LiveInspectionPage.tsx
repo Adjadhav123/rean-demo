@@ -263,7 +263,6 @@ export default function LiveInspectionPage() {
             </div>
 
             <CameraView
-              boxes={result.boxes}
               active={cameraActive}
               capturedImageBase64={result.capturedImageBase64}
               anomaly={result.anomaly}

@@ -1,13 +1,12 @@
-import type { BoundingBox, AnomalyView } from "../types/inspection";
+import type { AnomalyView } from "../types/inspection";
 
 interface CameraViewProps {
-  boxes: BoundingBox[];
   active: boolean;
   capturedImageBase64?: string | null;
   anomaly?: AnomalyView;
 }
 
-export default function CameraView({ boxes, active, capturedImageBase64, anomaly }: CameraViewProps) {
+export default function CameraView({ active, capturedImageBase64, anomaly }: CameraViewProps) {
   const hasImage = !!capturedImageBase64;
 
   return (
@@ -24,11 +23,11 @@ style={{
     : "radial-gradient(circle at 30% 20%, #23303f 0%, #151c26 55%, #0e131a 100%)",
   border: "1px solid var(--vq-border)",
 }} >
-      {/* Captured camera frame */}
+      {/* Captured crop image with annotations baked in */}
       {hasImage && (
         <img
           src={`data:image/png;base64,${capturedImageBase64}`}
-          alt="Captured camera frame"
+          alt="Detected part crop"
           style={{
             position: "absolute",
             inset: 0,
@@ -78,7 +77,7 @@ style={{
         </svg>
       )}
 
-      {!active && boxes.length === 0 && !hasImage && (
+      {!active && !hasImage && (
         <div
           style={{
             position: "absolute",
@@ -99,42 +98,6 @@ style={{
           <div style={{ marginTop: 8 }}>Press Start Inspection</div>
         </div>
       )}
-
-      {boxes.map((box) => {
-        const color = box.status === "correct" ? "var(--vq-green)" : "var(--vq-red)";
-        return (
-          <div
-            key={box.id}
-            style={{
-              position: "absolute",
-              top: `${box.top}%`,
-              left: `${box.left}%`,
-              width: `${box.width}%`,
-              height: `${box.height}%`,
-              border: `2px solid ${color}`,
-              borderRadius: 4,
-              boxShadow: `0 0 0 9999px transparent`,
-            }}
-          >
-            <span
-              style={{
-                position: "absolute",
-                top: -22,
-                left: -2,
-                background: color,
-                color: "#fff",
-                fontSize: 11,
-                fontWeight: 700,
-                padding: "2px 6px",
-                borderRadius: 4,
-                whiteSpace: "nowrap",
-              }}
-            >
-              {box.text}
-            </span>
-          </div>
-        );
-      })}
 
       </div>
   );
