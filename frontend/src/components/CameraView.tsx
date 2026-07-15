@@ -1,12 +1,13 @@
-import type { BoundingBox } from "../types/inspection";
+import type { BoundingBox, AnomalyView } from "../types/inspection";
 
 interface CameraViewProps {
   boxes: BoundingBox[];
   active: boolean;
   capturedImageBase64?: string | null;
+  anomaly?: AnomalyView;
 }
 
-export default function CameraView({ boxes, active, capturedImageBase64 }: CameraViewProps) {
+export default function CameraView({ boxes, active, capturedImageBase64, anomaly }: CameraViewProps) {
   const hasImage = !!capturedImageBase64;
 
   return (
@@ -36,6 +37,29 @@ style={{
             objectFit: "contain",
           }}
         />
+      )}
+
+      {/* Anomaly status badge */}
+      {anomaly && hasImage && (
+        <div
+          style={{
+            position: "absolute",
+            top: 10,
+            right: 10,
+            background: anomaly.count > 0 ? "rgba(239,68,68,0.9)" : "rgba(34,197,94,0.9)",
+            color: "#fff",
+            padding: "4px 10px",
+            borderRadius: 6,
+            fontSize: 12,
+            fontWeight: 700,
+            backdropFilter: "blur(4px)",
+            zIndex: 10,
+          }}
+        >
+          {anomaly.count > 0
+            ? `⚠ ANOMALY (${anomaly.score.toFixed(3)})`
+            : `✓ NORMAL (${anomaly.score.toFixed(3)})`}
+        </div>
       )}
 
       {/* Grid placeholder when no image */}

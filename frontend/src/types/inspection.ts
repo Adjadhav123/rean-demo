@@ -12,7 +12,6 @@ export interface AnomalyView {
   label: number;
   score: number;
   count: number;
-  mapImageBase64: string | null;
 }
 
 export interface BoundingBox {

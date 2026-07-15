@@ -125,8 +125,8 @@ class AnomalyEngine:
         tmp_path = None 
 
         try: 
-            with tempfile.NamedTemporaryFile(suffix=".png", delete=True) as tmp_file:
-                tmp_path = tmp_file.name
+            with tempfile.TemporaryDirectory() as tmp_dir:
+                tmp_path = os.path.join(tmp_dir, "input.png")
                 
                 cv2.imwrite(tmp_path, cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR))
 
@@ -147,24 +147,25 @@ class AnomalyEngine:
                 score = float(prediction.pred_score)
                 label = int(prediction.pred_label)
 
+                # Always compute anomaly map for visualization
+                anomaly_map = prediction.anomaly_map
+                if isinstance(anomaly_map, torch.Tensor):
+                    anomaly_map = anomaly_map.squeeze().cpu().numpy()
+                anomaly_map = cv2.normalize(anomaly_map, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
+                anomaly_map = cv2.resize(
+                    anomaly_map, (image_rgb.shape[1], image_rgb.shape[0]),
+                    interpolation=cv2.INTER_LINEAR,
+                )
+
                 if score < anomaly_threshold:
                     return {
                         "label": label,
                         "score": score,
-                        "mask" : None,
+                        "mask": anomaly_map,
                         "results": [],
                     }
                 
-                anomaly_map = prediction.anomaly_map
 
-                if isinstance(anomaly_map, torch.Tensor):
-                    anomaly_map = anomaly_map.squeeze().cpu().numpy()
-
-                anomaly_map = cv2.normalize(anomaly_map, None, 0, 255, cv2.NORM_MINMAX).astype(np.uint8)
-
-                anomaly_map = cv2.resize(
-                    anomaly_map, (image_rgb.shape[1], image_rgb.shape[0]), interpolation=cv2.INTER_LINEAR
-                                )
 
                 _, binary_mask = cv2.threshold(anomaly_map, mask_threshold, 255, cv2.THRESH_BINARY)
 
@@ -223,7 +224,7 @@ class AnomalyEngine:
                 return {
                     "label": label,
                     "score": score,
-                    "mask": binary_mask,
+                    "mask": anomaly_map,
                     "results": anomaly_results,
                 }
 

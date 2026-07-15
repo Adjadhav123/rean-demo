@@ -30,6 +30,7 @@ ANOMALY_THRESHOLD = 0.5
 MASK_THRESHOLD = 128
 MIN_AREA = 50
 RFDETR_THRESHOLD = 0.7
+OCR_MIN_CONFIDENCE = 0.75
 
 API_HOST = "0.0.0.0"
 API_PORT = 8001
@@ -145,7 +146,7 @@ def _encode_image_to_base64_png(image: np.ndarray | None) -> str | None:
     return base64.b64encode(encoded.tobytes()).decode("ascii")
 
 
-def _extract_ocr_lines(node: Any) -> list[dict[str, Any]]:
+def _extract_ocr_lines(node: Any, min_confidence: float = 0.0) -> list[dict[str, Any]]:
     lines: list[dict[str, Any]] = []
 
     def walk(value: Any) -> None:
@@ -193,6 +194,8 @@ def _extract_ocr_lines(node: Any) -> list[dict[str, Any]]:
             continue
         seen.add(key)
         deduped.append({"text": text, "score": line.get("score")})
+    if min_confidence > 0:
+        deduped = [line for line in deduped if line.get("score") is not None and line["score"] >= min_confidence]
     return deduped
 
 
@@ -266,16 +269,31 @@ def _build_payload(
     anomaly_score = float(anomaly.get("score", 0.0) or 0.0)
     anomaly_label = int(anomaly.get("label", 0) or 0)
 
+    # Annotate anomaly heatmap and bounding boxes directly on the captured image
+    annotated = image_bgr.copy()
     mask = anomaly.get("mask")
-    anomaly_map_b64 = None
     if isinstance(mask, np.ndarray) and mask.size > 0:
         if len(mask.shape) == 3:
             mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+        if mask.shape[:2] != (image_h, image_w):
+            mask = cv2.resize(mask, (image_w, image_h), interpolation=cv2.INTER_LINEAR)
         heatmap = cv2.applyColorMap(mask.astype(np.uint8), cv2.COLORMAP_JET)
-        overlay = cv2.addWeighted(image_bgr, 0.65, heatmap, 0.35, 0)
-        anomaly_map_b64 = _encode_image_to_base64_png(overlay)
+        annotated = cv2.addWeighted(annotated, 0.65, heatmap, 0.35, 0)
 
-    ocr_lines = _extract_ocr_lines(ocr_raw)
+        # Draw anomaly region bounding boxes on the image
+        for ar in anomaly_results:
+            bbox = ar.get("bbox")
+            if bbox and len(bbox) == 4:
+                x1a, y1a, x2a, y2a = [int(v) for v in bbox]
+                cv2.rectangle(annotated, (x1a, y1a), (x2a, y2a), (0, 0, 255), 2)
+                conf = ar.get("confidence", 0)
+                cv2.putText(
+                    annotated, f"Anomaly {conf:.2f}",
+                    (x1a, max(y1a - 8, 14)),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 255), 2,
+                )
+
+    ocr_lines = _extract_ocr_lines(ocr_raw, min_confidence=OCR_MIN_CONFIDENCE)
 
     total = len(ocr_lines)
     if total == 0 and anomaly_count > 0:
@@ -308,7 +326,7 @@ def _build_payload(
                 "height": (bh / image_h) * 100.0,
             })
 
-    captured_image_b64 = _encode_image_to_base64_png(image_bgr)
+    captured_image_b64 = _encode_image_to_base64_png(annotated)
 
     return {
         "total": total,
@@ -321,7 +339,6 @@ def _build_payload(
             "label": anomaly_label,
             "score": anomaly_score,
             "count": anomaly_count,
-            "mapImageBase64": anomaly_map_b64,
         },
         "capturedImageBase64": captured_image_b64,
     }
@@ -339,7 +356,6 @@ def _make_empty_result(error: str | None = None) -> dict[str, Any]:
             "label": 0,
             "score": 0.0,
             "count": 0,
-            "mapImageBase64": None,
         },
         "capturedImageBase64": None,
     }
