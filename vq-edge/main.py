@@ -35,6 +35,10 @@ OCR_MIN_CONFIDENCE = 0.75
 API_HOST = "0.0.0.0"
 API_PORT = 8001
 
+# Camera capture resolution (set to match your camera's native resolution)
+CAMERA_WIDTH = 3840
+CAMERA_HEIGHT = 2160
+
 # How long to wait between successive pipeline runs (seconds).
 LOOP_INTERVAL = 0.5
 
@@ -424,7 +428,18 @@ def _inspection_loop(state: InspectionState) -> None:
         state.status = "idle"
         return
 
-    # Warmup frames
+    # Set 4K resolution and optimal capture settings
+    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # Always grab the latest frame
+    cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)    # Enable autofocus
+
+    actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+    actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    print(f"[Inspection Loop] Camera resolution: {actual_w}x{actual_h}")
+
+    # Warmup frames (let auto-exposure settle)
     for _ in range(10):
         cap.read()
 
