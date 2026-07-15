@@ -150,12 +150,6 @@ def _encode_image_to_base64_png(image: np.ndarray | None) -> str | None:
     return base64.b64encode(encoded.tobytes()).decode("ascii")
 
 
-def _sharpen_frame(image: np.ndarray) -> np.ndarray:
-    """Apply unsharp-mask sharpening to improve text clarity for OCR."""
-    blurred = cv2.GaussianBlur(image, (0, 0), sigmaX=3)
-    return cv2.addWeighted(image, 1.5, blurred, -0.5, 0)
-
-
 def _extract_ocr_lines(node: Any, min_confidence: float = 0.0) -> list[dict[str, Any]]:
     """Walk OCR results and return [{text, score, box}, ...]."""
     lines: list[dict[str, Any]] = []
@@ -179,17 +173,8 @@ def _extract_ocr_lines(node: Any, min_confidence: float = 0.0) -> list[dict[str,
         if isinstance(value, dict):
             rec_texts = value.get("rec_texts")
             rec_scores = value.get("rec_scores")
-            # PaddleOCR stores boxes under different keys depending on config
-            rec_boxes = (
-                value.get("rec_boxes")
-                or value.get("dt_polys")
-                or value.get("rec_polys")
-                or value.get("det_boxes")
-            )
+            rec_boxes = value.get("rec_boxes")
             if isinstance(rec_texts, list):
-                # Debug: log available keys so we can verify box extraction
-                print(f"[OCR Debug] Found rec_texts ({len(rec_texts)} items), "
-                      f"keys in dict: {list(value.keys())}")
                 for idx, text in enumerate(rec_texts):
                     if not isinstance(text, str):
                         continue
@@ -200,7 +185,7 @@ def _extract_ocr_lines(node: Any, min_confidence: float = 0.0) -> list[dict[str,
                         except Exception:
                             score = None
                     box = None
-                    if rec_boxes is not None and idx < len(rec_boxes):
+                    if isinstance(rec_boxes, list) and idx < len(rec_boxes):
                         box = _parse_box(rec_boxes[idx])
                     lines.append({"text": text, "score": score, "box": box})
 
@@ -259,9 +244,6 @@ def run_single_frame(
       4. OCR on the cropped region
     Returns a dict ready to be sent to the frontend.
     """
-    # Sharpen the frame to improve text clarity for OCR
-    frame_bgr = _sharpen_frame(frame_bgr)
-
     image_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
 
     # Step 1: Remove background
@@ -318,8 +300,6 @@ def _build_payload(
     anomaly_label = int(anomaly.get("label", 0) or 0)
 
     ocr_lines = _extract_ocr_lines(ocr_raw, min_confidence=OCR_MIN_CONFIDENCE)
-    lines_with_boxes = sum(1 for l in ocr_lines if l.get("box"))
-    print(f"[Payload] OCR lines: {len(ocr_lines)}, with boxes: {lines_with_boxes}")
 
     # ---- Build the annotated crop image ----
     has_crop = (
@@ -438,8 +418,8 @@ def _inspection_loop(state: InspectionState) -> None:
 
     The camera stays open for the entire session (no open/close per frame).
     """
-    print(f"[Inspection Loop] Opening camera index {CAMERA_INDEX} (DirectShow)...")
-    cap = cv2.VideoCapture(CAMERA_INDEX, cv2.CAP_DSHOW)
+    print(f"[Inspection Loop] Opening camera index {CAMERA_INDEX}...")
+    cap = cv2.VideoCapture(CAMERA_INDEX)
 
     if not cap.isOpened():
         error_msg = f"Camera not available (index {CAMERA_INDEX})"
