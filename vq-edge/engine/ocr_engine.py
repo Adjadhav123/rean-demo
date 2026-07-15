@@ -15,8 +15,9 @@ class OCR_Engine:
             lang: str = "en",
     ):
         if cls._instance is None:
-            cls._instance = super().__new__(cls)
-            cls._instance._initialize(model_dir, lang)
+            instance = super().__new__(cls)
+            instance._initialize(model_dir, lang)
+            cls._instance = instance
         
         return cls._instance
     
