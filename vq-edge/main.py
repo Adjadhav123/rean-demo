@@ -17,7 +17,7 @@ from fastapi import FastAPI
 from engine.anomaly_engine import AnomalyEngine
 from engine.rfdetr_engine import RFDETREngine
 # ✓ FIXED: Import corrected OCR engine and extraction helper
-from engine.ocr_engine import OCR_Engine, extract_ocr_lines
+from engine.ocr_engine import OCR_Engine, run_ocr
 
 
 # ---------------------------------------------------------------------------
@@ -142,6 +142,34 @@ def remove_background(image_rgb: np.ndarray):
     return result_rgba, result_rgb
 
 
+def _normalize_bbox(box: Any, image_w: int, image_h: int) -> tuple[int, int, int, int] | None:
+    """Convert PaddleOCR box formats into a clamped x1, y1, x2, y2 rectangle."""
+    try:
+        box_array = np.array(box)
+
+        if box_array.ndim == 2 and box_array.shape[1] == 2:
+            x1 = int(box_array[:, 0].min())
+            y1 = int(box_array[:, 1].min())
+            x2 = int(box_array[:, 0].max())
+            y2 = int(box_array[:, 1].max())
+        elif box_array.ndim == 1 and len(box_array) == 4:
+            x1, y1, x2, y2 = [int(v) for v in box_array]
+        else:
+            return None
+
+        x1 = max(0, min(x1, image_w))
+        y1 = max(0, min(y1, image_h))
+        x2 = max(0, min(x2, image_w))
+        y2 = max(0, min(y2, image_h))
+
+        if x2 <= x1 or y2 <= y1:
+            return None
+
+        return x1, y1, x2, y2
+    except Exception:
+        return None
+
+
 def _encode_image_to_base64_png(image: np.ndarray | None) -> str | None:
     if image is None or image.size == 0:
         return None
@@ -149,6 +177,115 @@ def _encode_image_to_base64_png(image: np.ndarray | None) -> str | None:
     if not ok:
         return None
     return base64.b64encode(encoded.tobytes()).decode("ascii")
+
+
+# ---------------------------------------------------------------------------
+# OCR annotation helper
+# ---------------------------------------------------------------------------
+def _annotate_ocr_lines(
+    image_bgr: np.ndarray, 
+    ocr_lines: list[dict[str, Any]]
+) -> np.ndarray:
+    """
+    Draw green bounding boxes and text labels on the image for each OCR detection.
+    
+    Args:
+        image_bgr: Input image in BGR format (will be copied before modification)
+        ocr_lines: List of OCR results from extract_ocr_lines() with 'text' and 'box' keys
+        
+    Returns:
+        Annotated image with drawn boxes and text labels
+    """
+    annotated = image_bgr.copy()
+    
+    if not ocr_lines:
+        return annotated
+
+    img_h, img_w = annotated.shape[:2]
+    
+    for line in ocr_lines:
+        text = line.get("text", "")
+        box = line.get("box")
+        score = line.get("score")
+        
+        normalized_box = _normalize_bbox(box, img_w, img_h)
+        if normalized_box is None:
+            continue
+        
+        try:
+            bx1, by1, bx2, by2 = normalized_box
+            
+            # Draw green rectangle around detected text
+            cv2.rectangle(annotated, (bx1, by1), (bx2, by2), (0, 255, 0), 2)
+            
+            # Prepare label text with confidence score if available
+            label = text
+            if score is not None:
+                label = f"{text} ({score:.2f})"
+            
+            # Draw semi-transparent background for text readability
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.5
+            thickness = 1
+            (text_w, text_h), baseline = cv2.getTextSize(label, font, font_scale, thickness)
+            
+            # Position text above the box
+            text_x = bx1
+            text_y = max(by1 - 5, 15)
+            
+            # Draw black background for text
+            cv2.rectangle(
+                annotated,
+                (text_x - 2, text_y - text_h - 2),
+                (text_x + text_w + 2, text_y + baseline + 2),
+                (0, 0, 0),
+                -1
+            )
+            
+            # Draw white text
+            cv2.putText(
+                annotated, 
+                label,
+                (text_x, text_y),
+                font, 
+                font_scale, 
+                (255, 255, 255), 
+                thickness
+            )
+            
+        except Exception as e:
+            print(f"[OCR Annotation] Error drawing box {box}: {e}")
+            continue
+    
+    return annotated
+
+
+def _ocr_lines_to_boxes(
+    ocr_lines: list[dict[str, Any]],
+    image_w: int,
+    image_h: int,
+) -> list[dict[str, Any]]:
+    boxes: list[dict[str, Any]] = []
+
+    for idx, line in enumerate(ocr_lines):
+        normalized_box = _normalize_bbox(line.get("box"), image_w, image_h)
+        if normalized_box is None:
+            continue
+
+        x1, y1, x2, y2 = normalized_box
+        boxes.append(
+            {
+                "id": f"ocr-{idx + 1}",
+                "text": line.get("text", ""),
+                "status": "correct",
+                "top": (y1 / image_h) * 100.0 if image_h > 0 else 0.0,
+                "left": (x1 / image_w) * 100.0 if image_w > 0 else 0.0,
+                "width": ((x2 - x1) / image_w) * 100.0 if image_w > 0 else 0.0,
+                "height": ((y2 - y1) / image_h) * 100.0 if image_h > 0 else 0.0,
+            }
+        )
+
+    return boxes
 
 
 # ---------------------------------------------------------------------------
@@ -201,9 +338,13 @@ def run_single_frame(
         crop_bgr = part_result["crop"]
         if crop_bgr.size > 0:
             ocr_engine = OCR_Engine(model_dir=ocr_model_dir, device="gpu:0")
-            ocr_raw = ocr_engine.predict(crop_bgr)
-            # ✓ FIXED: Use extract_ocr_lines helper instead of broken _extract_ocr_lines
-            ocr_lines = extract_ocr_lines(ocr_raw, min_confidence=OCR_MIN_CONFIDENCE)
+            ocr_result = run_ocr(crop_bgr, ocr_engine)
+            ocr_lines = ocr_result["lines"]
+            
+            # Debug: log the extracted OCR lines
+            print(f"[Pipeline] Extracted {len(ocr_lines)} OCR lines from crop")
+            for i, line in enumerate(ocr_lines):
+                print(f"  Line {i}: text='{line['text']}', box={line.get('box')}, score={line.get('score'):.3f}")
 
     # Build the response payload
     return _build_payload(frame_bgr, anomaly_result, part_result, ocr_lines)
@@ -220,7 +361,7 @@ def _build_payload(
 
     The displayed image is the **crop** of the detected part with:
       - Anomaly heatmap overlay (when anomaly detected)
-      - Green bounding boxes around each OCR-detected text region
+      - Green bounding boxes around each OCR-detected text region with labels
     """
     image_h, image_w = image_bgr.shape[:2]
 
@@ -229,7 +370,6 @@ def _build_payload(
     anomaly_count = len(anomaly_results)
     anomaly_score = float(anomaly.get("score", 0.0) or 0.0)
     anomaly_label = int(anomaly.get("label", 0) or 0)
-
 
     # ---- Build the annotated crop image ----
     has_crop = (
@@ -244,9 +384,12 @@ def _build_payload(
         annotated = crop.copy()
         crop_h, crop_w = annotated.shape[:2]
 
+        print(f"[Build Payload] Crop size: {crop_w}x{crop_h}, Anomaly count: {anomaly_count}, OCR lines: {len(ocr_lines)}")
+
         # --- Anomaly heatmap on crop (only when anomaly detected) ---
         mask = anomaly.get("mask")
         if isinstance(mask, np.ndarray) and mask.size > 0 and anomaly_count > 0:
+            print("[Build Payload] Applying anomaly heatmap overlay...")
             if len(mask.shape) == 3:
                 mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
             if mask.shape[:2] != (image_h, image_w):
@@ -269,22 +412,22 @@ def _build_payload(
                 + heatmap.astype(np.float32) * alpha_3ch
             ).astype(np.uint8)
 
-        # --- Green bounding boxes for OCR text ---
-        for line in ocr_lines:
-            box = line.get("box")
-            if box and len(box) == 4:
-                bx1, by1, bx2, by2 = [int(v) for v in box]
-                cv2.rectangle(annotated, (bx1, by1), (bx2, by2), (0, 255, 0), 2)
-                cv2.putText(
-                    annotated, line["text"],
-                    (bx1, max(by1 - 5, 12)),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 255, 0), 1,
-                )
+        # --- ✓ FIXED: Draw green bounding boxes for OCR text using helper function ---
+        if ocr_lines:
+            print(f"[Build Payload] Drawing {len(ocr_lines)} OCR bounding boxes on crop...")
+            annotated = _annotate_ocr_lines(annotated, ocr_lines)
+        else:
+            print("[Build Payload] No OCR lines to annotate")
+
+        boxes = _ocr_lines_to_boxes(ocr_lines, crop_w, crop_h)
 
         captured_image_b64 = _encode_image_to_base64_png(annotated)
+        print("[Build Payload] Annotated crop encoded to PNG and base64")
     else:
         # No crop available — show the raw camera frame
+        print("[Build Payload] No crop available, using raw frame")
         captured_image_b64 = _encode_image_to_base64_png(image_bgr)
+        boxes = []
 
     # ---- Compute summary stats ----
     total = len(ocr_lines)
@@ -301,6 +444,7 @@ def _build_payload(
         })
 
     # Strip internal box coords before sending to frontend
+    # ✓ FIXED: Keep only text and score, remove box from frontend payload
     frontend_ocr = [{"text": l["text"], "score": l.get("score")} for l in ocr_lines]
 
     return {
@@ -308,7 +452,7 @@ def _build_payload(
         "accepted": accepted,
         "rejected": rejected,
         "wrongText": wrong_text,
-        "boxes": [],
+        "boxes": boxes,
         "ocrLines": frontend_ocr,
         "anomaly": {
             "label": anomaly_label,

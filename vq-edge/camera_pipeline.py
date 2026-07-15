@@ -1,33 +1,78 @@
 from __future__ import annotations
 
 import argparse
-import base64
-import json
 import tempfile
+import time
 from pathlib import Path
-from typing import Any
 
 import cv2
 import numpy as np
 
-from main import PipelineConfig, run_pipeline
+from main import (
+    run_single_frame,
+    ANOMALY_MODEL_PATH,
+    RFDETR_MODEL_PATH,
+    OCR_MODEL_DIR,
+    ANOMALY_THRESHOLD,
+    MASK_THRESHOLD,
+    MIN_AREA,
+    RFDETR_THRESHOLD,
+    CAMERA_WIDTH,
+    CAMERA_HEIGHT,
+)
+
+# How long to let autofocus / auto-exposure settle after opening the camera
+# or after re-triggering focus, before we trust any frame.
+FOCUS_SETTLE_SECONDS = 1.5
+
+# Number of candidate frames to compare (by sharpness) once settled.
+CANDIDATE_FRAMES = 5
+
+# Laplacian-variance threshold below which a frame is considered blurry.
+# This is scene-dependent — tune it against a few real captures. Printed
+# to the console on every capture so you can calibrate it.
+MIN_SHARPNESS = 60.0
+
+# If every candidate frame comes back blurry, how many extra times to
+# re-settle and try again before giving up.
+MAX_RETRIES = 2
+
+
+def _sharpness_score(frame_bgr: np.ndarray) -> float:
+    """
+    Focus/sharpness metric: variance of the Laplacian. Higher = sharper.
+    Computed on a grayscale, moderately downscaled copy for speed.
+    """
+    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
+    h, w = gray.shape[:2]
+    if max(h, w) > 1000:
+        scale = 1000 / max(h, w)
+        gray = cv2.resize(gray, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+
+
+def _flush_buffer(cap: cv2.VideoCapture, n: int = 3) -> None:
+    """Discard a few buffered frames so the next read() isn't stale/in-motion."""
+    for _ in range(n):
+        cap.grab()
 
 
 def capture_image_from_camera(
     camera_index: int,
-    output_path: str | Path,
+    width: int = CAMERA_WIDTH,
+    height: int = CAMERA_HEIGHT,
     warmup_frames: int = 10,
-) -> str:
+    settle_seconds: float = FOCUS_SETTLE_SECONDS,
+    candidate_frames: int = CANDIDATE_FRAMES,
+    min_sharpness: float = MIN_SHARPNESS,
+    max_retries: int = MAX_RETRIES,
+) -> np.ndarray:
     """
-    Capture one frame from the selected camera and save it to disk.
+    Open the selected camera, set it to the target resolution, give
+    autofocus/auto-exposure time to settle, then grab several candidate
+    frames and keep the sharpest one.
 
-    Args:
-        camera_index: OpenCV camera index (0, 1, 2, ...)
-        output_path: Where to save the captured image
-        warmup_frames: Number of frames to discard before capture
-
-    Returns:
-        Absolute path to the saved image
+    Returns the captured frame as a BGR numpy array.
     """
     cap = cv2.VideoCapture(camera_index)
 
@@ -35,336 +80,152 @@ def capture_image_from_camera(
         raise RuntimeError(f"Unable to open camera index {camera_index}")
 
     try:
+        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
+
+        actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        print(f"[Camera] Opened at {actual_w}x{actual_h}")
+
         for _ in range(max(0, warmup_frames)):
             cap.read()
 
-        ok, frame_bgr = cap.read()
-        if not ok or frame_bgr is None:
-            raise RuntimeError(f"Failed to capture frame from camera index {camera_index}")
+        best_frame: np.ndarray | None = None
+        best_score = -1.0
 
-        output_path = str(Path(output_path).resolve())
-        saved = cv2.imwrite(output_path, frame_bgr)
-        if not saved:
-            raise RuntimeError(f"Failed to save captured image to {output_path}")
+        for attempt in range(max_retries + 1):
+            # Let autofocus / auto-exposure converge before trusting frames.
+            time.sleep(settle_seconds)
+            _flush_buffer(cap)
 
-        print(f"Captured image saved: {output_path}")
-        return output_path
+            for _ in range(candidate_frames):
+                ok, frame_bgr = cap.read()
+                if not ok or frame_bgr is None:
+                    continue
+                score = _sharpness_score(frame_bgr)
+                if score > best_score:
+                    best_score = score
+                    best_frame = frame_bgr
+
+            print(f"[Camera] Attempt {attempt + 1}: best sharpness score = {best_score:.1f}")
+
+            if best_score >= min_sharpness:
+                break
+
+            if attempt < max_retries:
+                print("[Camera] Frame below sharpness threshold, re-triggering focus and retrying...")
+                # Re-trigger autofocus by toggling it off/on.
+                cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
+                cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
+
+        if best_frame is None:
+            raise RuntimeError(f"Failed to capture any frame from camera index {camera_index}")
+
+        if best_score < min_sharpness:
+            print(
+                f"[Camera] Warning: best frame scored {best_score:.1f}, "
+                f"below the sharpness threshold of {min_sharpness:.1f}. Using it anyway."
+            )
+
+        print(f"[Camera] Captured frame at {actual_w}x{actual_h} (sharpness={best_score:.1f})")
+        return best_frame
     finally:
         cap.release()
 
 
-def run_camera_pipeline(
-    camera_index: int,
-    anomaly_model_path: str,
-    rfdetr_model_path: str,
-    ocr_model_dir: str | None = None,
-    output_image_path: str | None = None,
-    anomaly_threshold: float = 0.5,
-    mask_threshold: int = 128,
-    min_area: int = 50,
-    rfdetr_threshold: float = 0.7,
-):
-    """
-    Full flow:
-    1) Capture image from selected camera
-    2) Remove background
-    3) Run anomaly detection
-    4) Run RF-DETR
-    5) Run OCR on detected crop
-    """
-    if output_image_path is None:
-        temp_dir = tempfile.gettempdir()
-        output_image_path = str(Path(temp_dir) / "captured_frame.png")
+def save_frame(frame_bgr: np.ndarray, output_path: str | Path | None = None) -> str:
+    """Save a captured frame to disk and return the absolute path."""
+    if output_path is None:
+        output_path = Path(tempfile.gettempdir()) / "captured_frame.png"
 
-    image_path = capture_image_from_camera(
+    output_path = str(Path(output_path).resolve())
+    if not cv2.imwrite(output_path, frame_bgr):
+        raise RuntimeError(f"Failed to save captured image to {output_path}")
+
+    print(f"[Camera] Saved frame to {output_path}")
+    return output_path
+
+
+def capture_and_run(
+    camera_index: int = 0,
+    output_image_path: str | Path | None = None,
+    settle_seconds: float = FOCUS_SETTLE_SECONDS,
+    candidate_frames: int = CANDIDATE_FRAMES,
+    min_sharpness: float = MIN_SHARPNESS,
+) -> dict:
+    """
+    Capture one high-resolution frame from the camera and hand it off to
+    the main pipeline (background removal, anomaly detection, part
+    detection, OCR) for processing.
+    """
+    frame_bgr = capture_image_from_camera(
         camera_index=camera_index,
-        output_path=output_image_path,
+        settle_seconds=settle_seconds,
+        candidate_frames=candidate_frames,
+        min_sharpness=min_sharpness,
     )
 
-    config = PipelineConfig(
-        image_path=image_path,
-        anomaly_model_path=anomaly_model_path,
-        rfdetr_model_path=rfdetr_model_path,
-        ocr_model_dir=ocr_model_dir,
-        anomaly_threshold=anomaly_threshold,
-        mask_threshold=mask_threshold,
-        min_area=min_area,
-        rfdetr_threshold=rfdetr_threshold,
+    if output_image_path is not None:
+        save_frame(frame_bgr, output_image_path)
+
+    return run_single_frame(
+        frame_bgr=frame_bgr,
+        anomaly_model_path=ANOMALY_MODEL_PATH,
+        rfdetr_model_path=RFDETR_MODEL_PATH,
+        ocr_model_dir=OCR_MODEL_DIR,
+        anomaly_threshold=ANOMALY_THRESHOLD,
+        mask_threshold=MASK_THRESHOLD,
+        min_area=MIN_AREA,
+        rfdetr_threshold=RFDETR_THRESHOLD,
     )
-
-    return run_pipeline(
-        image_path=config.image_path,
-        anomaly_model_path=config.anomaly_model_path,
-        rfdetr_model_path=config.rfdetr_model_path,
-        ocr_model_dir=config.ocr_model_dir,
-        anomaly_threshold=config.anomaly_threshold,
-        mask_threshold=config.mask_threshold,
-        min_area=config.min_area,
-        rfdetr_threshold=config.rfdetr_threshold,
-    )
-
-
-def _encode_image_to_base64_png(image: np.ndarray | None) -> str | None:
-    if image is None or image.size == 0:
-        return None
-
-    ok, encoded = cv2.imencode(".png", image)
-    if not ok:
-        return None
-
-    return base64.b64encode(encoded.tobytes()).decode("ascii")
-
-
-def _extract_ocr_lines(node: Any) -> list[dict[str, Any]]:
-    lines: list[dict[str, Any]] = []
-
-    def walk(value: Any) -> None:
-        if isinstance(value, dict):
-            rec_texts = value.get("rec_texts")
-            rec_scores = value.get("rec_scores")
-            if isinstance(rec_texts, list):
-                for idx, text in enumerate(rec_texts):
-                    if not isinstance(text, str):
-                        continue
-                    score = None
-                    if isinstance(rec_scores, list) and idx < len(rec_scores):
-                        try:
-                            score = float(rec_scores[idx])
-                        except Exception:
-                            score = None
-                    lines.append(
-                        {
-                            "text": text,
-                            "score": score,
-                        }
-                    )
-
-            if isinstance(value.get("text"), str):
-                score = value.get("score")
-                try:
-                    score = float(score) if score is not None else None
-                except Exception:
-                    score = None
-                lines.append(
-                    {
-                        "text": value["text"],
-                        "score": score,
-                    }
-                )
-
-            for child in value.values():
-                walk(child)
-            return
-
-        if isinstance(value, (list, tuple)):
-            for child in value:
-                walk(child)
-            return
-
-        if isinstance(value, str):
-            lines.append({"text": value, "score": None})
-
-    walk(node)
-
-    deduped: list[dict[str, Any]] = []
-    seen: set[str] = set()
-
-    for line in lines:
-        text = line.get("text", "").strip()
-        if not text:
-            continue
-        key = f"{text}|{line.get('score')}"
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append(
-            {
-                "text": text,
-                "score": line.get("score"),
-            }
-        )
-
-    return deduped
-
-
-def build_inspection_payload(image_path: str, combined_result: dict[str, Any]) -> dict[str, Any]:
-    image_bgr = cv2.imread(image_path)
-    if image_bgr is None:
-        raise FileNotFoundError(f"Unable to read captured image: {image_path}")
-
-    image_h, image_w = image_bgr.shape[:2]
-
-    anomaly = combined_result.get("anomaly") or {}
-    part = combined_result.get("part")
-    ocr_raw = combined_result.get("ocr")
-
-    anomaly_results = anomaly.get("results") or []
-    anomaly_count = len(anomaly_results)
-    anomaly_score = float(anomaly.get("score", 0.0) or 0.0)
-    anomaly_label = int(anomaly.get("label", 0) or 0)
-
-    mask = anomaly.get("mask")
-    anomaly_map_b64 = None
-
-    if isinstance(mask, np.ndarray) and mask.size > 0:
-        if len(mask.shape) == 3:
-            mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
-
-        heatmap = cv2.applyColorMap(mask.astype(np.uint8), cv2.COLORMAP_JET)
-        overlay = cv2.addWeighted(image_bgr, 0.65, heatmap, 0.35, 0)
-        anomaly_map_b64 = _encode_image_to_base64_png(overlay)
-
-    ocr_lines = _extract_ocr_lines(ocr_raw)
-
-    total = len(ocr_lines)
-    if total == 0 and anomaly_count > 0:
-        total = anomaly_count
-
-    rejected = min(total, anomaly_count) if total > 0 else anomaly_count
-    accepted = max(0, total - rejected)
-
-    wrong_text = []
-    if anomaly_count > 0:
-        wrong_text.append(
-            {
-                "text": "Anomaly region detected",
-                "reason": f"score={anomaly_score:.3f}",
-            }
-        )
-
-    boxes: list[dict[str, Any]] = []
-    if isinstance(part, dict):
-        bbox = part.get("bbox")
-        if isinstance(bbox, (list, tuple)) and len(bbox) == 4 and image_w > 0 and image_h > 0:
-            x1, y1, x2, y2 = [int(v) for v in bbox]
-            bw = max(0, x2 - x1)
-            bh = max(0, y2 - y1)
-
-            box_label = ocr_lines[0]["text"] if ocr_lines else "Detected Part"
-
-            boxes.append(
-                {
-                    "id": "part-1",
-                    "text": box_label,
-                    "status": "wrong" if anomaly_count > 0 else "correct",
-                    "top": (y1 / image_h) * 100.0,
-                    "left": (x1 / image_w) * 100.0,
-                    "width": (bw / image_w) * 100.0,
-                    "height": (bh / image_h) * 100.0,
-                }
-            )
-
-    return {
-        "total": total,
-        "accepted": accepted,
-        "rejected": rejected,
-        "wrongText": wrong_text,
-        "boxes": boxes,
-        "ocrLines": ocr_lines,
-        "anomaly": {
-            "label": anomaly_label,
-            "score": anomaly_score,
-            "count": anomaly_count,
-            "mapImageBase64": anomaly_map_b64,
-        },
-        "capturedImagePath": image_path,
-    }
 
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Capture image from camera and run full inference pipeline",
+        description="Capture a high-resolution image from the camera and run it through the pipeline",
     )
-
-    parser.add_argument(
-        "--camera-index",
-        type=int,
-        default=0,
-        help="OpenCV camera index (default: 0)",
-    )
-    parser.add_argument(
-        "--anomaly-model-path",
-        type=str,
-        required=True,
-        help="Path to anomaly checkpoint",
-    )
-    parser.add_argument(
-        "--rfdetr-model-path",
-        type=str,
-        required=True,
-        help="Path to RF-DETR weights",
-    )
-    parser.add_argument(
-        "--ocr-model-dir",
-        type=str,
-        default=None,
-        help="Optional OCR model directory",
-    )
+    parser.add_argument("--camera-index", type=int, default=0, help="OpenCV camera index (default: 0)")
     parser.add_argument(
         "--output-image-path",
         type=str,
         default=None,
-        help="Optional output path for captured image",
+        help="Optional path to save the captured image",
     )
     parser.add_argument(
-        "--anomaly-threshold",
+        "--settle-seconds",
         type=float,
-        default=0.5,
-        help="Anomaly score threshold",
+        default=FOCUS_SETTLE_SECONDS,
+        help="Seconds to wait for autofocus/auto-exposure to settle (default: %(default)s)",
     )
     parser.add_argument(
-        "--mask-threshold",
+        "--candidate-frames",
         type=int,
-        default=128,
-        help="Binary threshold for anomaly map",
+        default=CANDIDATE_FRAMES,
+        help="Number of frames to compare by sharpness per attempt (default: %(default)s)",
     )
     parser.add_argument(
-        "--min-area",
-        type=int,
-        default=50,
-        help="Minimum connected-component area",
-    )
-    parser.add_argument(
-        "--rfdetr-threshold",
+        "--min-sharpness",
         type=float,
-        default=0.7,
-        help="RF-DETR confidence threshold",
+        default=MIN_SHARPNESS,
+        help="Laplacian-variance sharpness threshold (default: %(default)s)",
     )
-    parser.add_argument(
-        "--json-output",
-        action="store_true",
-        help="Print a single-line JSON payload for API integration",
-    )
-
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
-
-    result = run_camera_pipeline(
+    result = capture_and_run(
         camera_index=args.camera_index,
-        anomaly_model_path=args.anomaly_model_path,
-        rfdetr_model_path=args.rfdetr_model_path,
-        ocr_model_dir=args.ocr_model_dir,
         output_image_path=args.output_image_path,
-        anomaly_threshold=args.anomaly_threshold,
-        mask_threshold=args.mask_threshold,
-        min_area=args.min_area,
-        rfdetr_threshold=args.rfdetr_threshold,
+        settle_seconds=args.settle_seconds,
+        candidate_frames=args.candidate_frames,
+        min_sharpness=args.min_sharpness,
     )
-
-    payload = build_inspection_payload(
-        image_path=args.output_image_path or str(Path(tempfile.gettempdir()) / "captured_frame.png"),
-        combined_result=result,
-    )
-
-    if args.json_output:
-        print(json.dumps(payload, ensure_ascii=True))
-        return
-
-    print("Final pipeline result:")
-    print(payload)
+    print("Pipeline result:")
+    print(result)
 
 
 if __name__ == "__main__":

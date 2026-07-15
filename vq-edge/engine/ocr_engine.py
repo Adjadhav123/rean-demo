@@ -3,8 +3,14 @@ import time
 from pathlib import Path 
 from typing import Any
 
+import cv2
 import numpy as np 
 from paddleocr import PaddleOCR 
+
+
+OCR_BBOX_COLOR = (0, 255, 0)
+OCR_TEXT_COLOR = (0, 0, 255)
+OCR_BBOX_THICKNESS = 2
 
 
 class OCR_Engine:
@@ -104,6 +110,108 @@ class OCR_Engine:
         except Exception as e:
             print(f"[OCR_Engine] Prediction failed: {e}")
             return []
+
+
+def draw_ocr_bboxes(image_bgr: np.ndarray, texts, scores, boxes):
+    """
+    Draw OCR bounding boxes and text on image.
+    """
+    annotated = image_bgr.copy()
+
+    for idx, (text, score, box) in enumerate(zip(texts, scores, boxes)):
+        box = np.array(box)
+
+        if box.ndim == 2:
+            x1 = int(box[:, 0].min())
+            y1 = int(box[:, 1].min())
+            x2 = int(box[:, 0].max())
+            y2 = int(box[:, 1].max())
+        elif box.ndim == 1 and len(box) == 4:
+            x1, y1, x2, y2 = map(int, box)
+        else:
+            print(f"Skipping text '{text}': unknown box format {box}")
+            continue
+
+        cv2.rectangle(annotated, (x1, y1), (x2, y2), OCR_BBOX_COLOR, OCR_BBOX_THICKNESS)
+
+        label = f"{text} ({score:.2f})"
+        font = cv2.FONT_HERSHEY_SIMPLEX
+        font_scale = 0.5
+        thickness = 1
+        text_size = cv2.getTextSize(label, font, font_scale, thickness)[0]
+
+        text_x = x1
+        text_y = max(y1 - 5, text_size[1] + 5)
+        cv2.rectangle(
+            annotated,
+            (text_x, text_y - text_size[1] - 5),
+            (text_x + text_size[0], text_y + 5),
+            OCR_BBOX_COLOR,
+            -1,
+        )
+
+        cv2.putText(
+            annotated,
+            label,
+            (text_x, text_y),
+            font,
+            font_scale,
+            OCR_TEXT_COLOR,
+            thickness,
+        )
+
+    return annotated
+
+
+def run_ocr(crop: np.ndarray, engine: OCR_Engine | None = None) -> dict[str, Any]:
+    """
+    Run OCR, extract texts/scores/boxes, and return an annotated crop.
+    """
+    if engine is None:
+        engine = OCR_Engine()
+
+    print("\nRunning PaddleOCR...\n")
+    start_time = time.time()
+    result = engine.predict(crop)
+    end_time = time.time()
+
+    print(f"OCR took {(end_time - start_time) * 1000:.0f} ms.")
+
+    if not result:
+        print("No OCR result.")
+        return {"texts": [], "scores": [], "boxes": [], "lines": [], "annotated": crop}
+
+    page = result[0]
+
+    texts = page.get("rec_texts", [])
+    scores = page.get("rec_scores", [])
+    boxes = page.get("rec_boxes", [])
+
+    if len(texts) == 0:
+        print("No text detected.")
+        return {"texts": [], "scores": [], "boxes": [], "lines": [], "annotated": crop}
+
+    print(f"Drawing {len(texts)} text bounding boxes...")
+    annotated_crop = draw_ocr_bboxes(crop, texts, scores, boxes)
+
+    lines: list[dict[str, Any]] = []
+    for text, score, box in zip(texts, scores, boxes):
+        parsed_box = _parse_bbox(box)
+        lines.append(
+            {
+                "text": text,
+                "score": float(score) if score is not None else None,
+                "box": parsed_box,
+            }
+        )
+
+    return {
+        "texts": texts,
+        "scores": scores,
+        "boxes": boxes,
+        "lines": lines,
+        "annotated": annotated_crop,
+    }
 
 
 def extract_ocr_lines(

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Button, Card, message } from "antd";
+import { Button, message } from "antd";
 import { CheckCircleFilled, PauseCircleFilled, PlayCircleFilled } from "@ant-design/icons";
 import StatusIndicator from "../components/StatusIndicator";
 import SummaryCard from "../components/SummaryCard";
@@ -267,42 +267,6 @@ export default function LiveInspectionPage() {
               capturedImageBase64={result.capturedImageBase64}
               anomaly={result.anomaly}
             />
-
-            <div style={{ marginTop: 16 }}>
-
-              <Card
-                title="OCR Output"
-                bodyStyle={{ padding: 12 }}
-                style={{ border: "1px solid var(--vq-border)", minHeight: 210 }}
-              >
-                {result.ocrLines.length === 0 ? (
-                  <div style={{ color: "var(--vq-text-muted)", fontSize: 13 }}>
-                    No OCR text detected.
-                  </div>
-                ) : (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                    {result.ocrLines.map((line, idx) => (
-                      <div
-                        key={`${line.text}-${idx}`}
-                        style={{
-                          display: "flex",
-                          justifyContent: "space-between",
-                          alignItems: "center",
-                          border: "1px solid var(--vq-border)",
-                          borderRadius: 8,
-                          padding: "8px 10px",
-                        }}
-                      >
-                        <span style={{ fontWeight: 600, fontSize: 13 }}>{line.text}</span>
-                        <span style={{ color: "var(--vq-text-muted)", fontSize: 12 }}>
-                          {line.score == null ? "score: n/a" : `score: ${line.score.toFixed(3)}`}
-                        </span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </Card>
-            </div>
 
             <div
               style={{
