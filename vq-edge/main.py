@@ -173,7 +173,7 @@ def _extract_ocr_lines(node: Any, min_confidence: float = 0.0) -> list[dict[str,
         if isinstance(value, dict):
             rec_texts = value.get("rec_texts")
             rec_scores = value.get("rec_scores")
-            rec_boxes = value.get("rec_boxes")
+            rec_boxes = value.get("rec_boxes") or value.get("dt_polys") or value.get("rec_polys")
             if isinstance(rec_texts, list):
                 for idx, text in enumerate(rec_texts):
                     if not isinstance(text, str):
