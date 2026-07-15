@@ -23,8 +23,8 @@ from engine.ocr_engine import OCR_Engine
 # Runtime configuration
 # ---------------------------------------------------------------------------
 CAMERA_INDEX = 0
-ANOMALY_MODEL_PATH = "C:/models/anomaly_model.ckpt"
-RFDETR_MODEL_PATH = "C:/models/rfdetr_model.pth"
+ANOMALY_MODEL_PATH = r"C:\Users\medhavyn\OneDrive - Medhavyn Technologies (1)\Dhananjay Odhekar's files - VisionQ-Training-Datasets\rangavishwa\ckpt-models\raen_crompton_anomaly_new.ckpt"
+RFDETR_MODEL_PATH = r"C:\Users\medhavyn\OneDrive - Medhavyn Technologies (1)\Dhananjay Odhekar's files - VisionQ-Training-Datasets\bill-industries\models-rfdetr\biin_0101ES200600N.pth"
 OCR_MODEL_DIR: str | None = None
 ANOMALY_THRESHOLD = 0.5
 MASK_THRESHOLD = 128
@@ -224,8 +224,9 @@ def run_single_frame(
 
     # Step 1: Remove background
     _, image_rgb_no_bg = remove_background(image_rgb)
+    image_bgr_no_bg = cv2.cvtColor(image_rgb_no_bg, cv2.COLOR_RGB2BGR)
 
-    # Step 2: Anomaly detection
+    # Step 2: Anomaly detection on bg-removed image
     anomaly_engine = AnomalyEngine()
     anomaly_result = anomaly_engine._detect_anomaly(
         image_rgb=image_rgb_no_bg,
@@ -235,14 +236,14 @@ def run_single_frame(
         min_area=min_area,
     )
 
-    # Step 3: Part detection (RF-DETR)
+    # Step 3: Part detection (RF-DETR) on bg-removed image
     rfdetr_engine = RFDETREngine(
         model_path=rfdetr_model_path,
         threshold=rfdetr_threshold,
     )
-    part_result = rfdetr_engine.detect_part(frame_bgr)
+    part_result = rfdetr_engine.detect_part(image_bgr_no_bg)
 
-    # Step 4: OCR on cropped part (only if part was detected)
+    # Step 4: OCR on cropped part (crop is from bg-removed image)
     ocr_result = None
     if part_result is not None:
         crop_bgr = part_result["crop"]
@@ -250,8 +251,8 @@ def run_single_frame(
             ocr_engine = OCR_Engine(model_dir=ocr_model_dir)
             ocr_result = ocr_engine.predict(crop_bgr)
 
-    # Build the response payload
-    return _build_payload(frame_bgr, anomaly_result, part_result, ocr_result)
+    # Build the response payload using bg-removed image as base
+    return _build_payload(image_bgr_no_bg, anomaly_result, part_result, ocr_result)
 
 
 def _build_payload(
@@ -278,7 +279,17 @@ def _build_payload(
         if mask.shape[:2] != (image_h, image_w):
             mask = cv2.resize(mask, (image_w, image_h), interpolation=cv2.INTER_LINEAR)
         heatmap = cv2.applyColorMap(mask.astype(np.uint8), cv2.COLORMAP_JET)
-        annotated = cv2.addWeighted(annotated, 0.65, heatmap, 0.35, 0)
+
+        # Only overlay heatmap where anomaly values are significant
+        # This prevents the background from glowing blue/red
+        alpha = np.zeros((image_h, image_w), dtype=np.float32)
+        significant = mask.astype(np.float32) > 30
+        alpha[significant] = 0.45
+        alpha_3ch = np.stack([alpha] * 3, axis=-1)
+        annotated = (
+            annotated.astype(np.float32) * (1 - alpha_3ch)
+            + heatmap.astype(np.float32) * alpha_3ch
+        ).astype(np.uint8)
 
         # Draw anomaly region bounding boxes on the image
         for ar in anomaly_results:
