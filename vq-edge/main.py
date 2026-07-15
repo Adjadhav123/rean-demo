@@ -179,8 +179,17 @@ def _extract_ocr_lines(node: Any, min_confidence: float = 0.0) -> list[dict[str,
         if isinstance(value, dict):
             rec_texts = value.get("rec_texts")
             rec_scores = value.get("rec_scores")
-            rec_boxes = value.get("rec_boxes") or value.get("dt_polys")
+            # PaddleOCR stores boxes under different keys depending on config
+            rec_boxes = (
+                value.get("rec_boxes")
+                or value.get("dt_polys")
+                or value.get("rec_polys")
+                or value.get("det_boxes")
+            )
             if isinstance(rec_texts, list):
+                # Debug: log available keys so we can verify box extraction
+                print(f"[OCR Debug] Found rec_texts ({len(rec_texts)} items), "
+                      f"keys in dict: {list(value.keys())}")
                 for idx, text in enumerate(rec_texts):
                     if not isinstance(text, str):
                         continue
@@ -191,7 +200,7 @@ def _extract_ocr_lines(node: Any, min_confidence: float = 0.0) -> list[dict[str,
                         except Exception:
                             score = None
                     box = None
-                    if isinstance(rec_boxes, (list, np.ndarray)) and idx < len(rec_boxes):
+                    if rec_boxes is not None and idx < len(rec_boxes):
                         box = _parse_box(rec_boxes[idx])
                     lines.append({"text": text, "score": score, "box": box})
 
@@ -309,6 +318,8 @@ def _build_payload(
     anomaly_label = int(anomaly.get("label", 0) or 0)
 
     ocr_lines = _extract_ocr_lines(ocr_raw, min_confidence=OCR_MIN_CONFIDENCE)
+    lines_with_boxes = sum(1 for l in ocr_lines if l.get("box"))
+    print(f"[Payload] OCR lines: {len(ocr_lines)}, with boxes: {lines_with_boxes}")
 
     # ---- Build the annotated crop image ----
     has_crop = (
