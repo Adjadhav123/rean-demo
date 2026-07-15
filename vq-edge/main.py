@@ -173,7 +173,11 @@ def _extract_ocr_lines(node: Any, min_confidence: float = 0.0) -> list[dict[str,
         if isinstance(value, dict):
             rec_texts = value.get("rec_texts")
             rec_scores = value.get("rec_scores")
-            rec_boxes = value.get("rec_boxes") or value.get("dt_polys") or value.get("rec_polys")
+            rec_boxes = value.get("rec_boxes")
+            if rec_boxes is None:
+                rec_boxes = value.get("dt_polys")
+            if rec_boxes is None:
+                rec_boxes = value.get("rec_polys")
             if isinstance(rec_texts, list):
                 for idx, text in enumerate(rec_texts):
                     if not isinstance(text, str):
@@ -300,6 +304,15 @@ def _build_payload(
     anomaly_label = int(anomaly.get("label", 0) or 0)
 
     ocr_lines = _extract_ocr_lines(ocr_raw, min_confidence=OCR_MIN_CONFIDENCE)
+
+    # Log OCR results to terminal for debugging
+    if ocr_lines:
+        print("\n--- OCR Results ---")
+        for i, line in enumerate(ocr_lines):
+            print(f"  [{i}] text={line['text']!r}  score={line.get('score'):.3f}  box={line.get('box')}")
+        print("-------------------\n")
+    else:
+        print("[OCR] No text detected above confidence threshold.")
 
     # ---- Build the annotated crop image ----
     has_crop = (
