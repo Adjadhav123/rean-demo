@@ -51,7 +51,6 @@ class AnomalyEngine:
             teacher_out_channels=384,
             model_size="medium",
             pre_processor=pre_processor,
-            visualizer = False,
         )
 
         engine = Engine()

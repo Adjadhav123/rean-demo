@@ -215,8 +215,8 @@ def run_single_frame(
     """
     Run the full pipeline on a single captured frame:
       1. Remove background
-      2. Anomaly detection
-      3. Part detection (RF-DETR) + crop
+      2. Anomaly detection (on bg-removed image)
+      3. Part detection (RF-DETR) + crop (on original frame)
       4. OCR on the cropped region
     Returns a dict ready to be sent to the frontend.
     """
@@ -224,7 +224,6 @@ def run_single_frame(
 
     # Step 1: Remove background
     _, image_rgb_no_bg = remove_background(image_rgb)
-    image_bgr_no_bg = cv2.cvtColor(image_rgb_no_bg, cv2.COLOR_RGB2BGR)
 
     # Step 2: Anomaly detection on bg-removed image
     anomaly_engine = AnomalyEngine()
@@ -236,14 +235,14 @@ def run_single_frame(
         min_area=min_area,
     )
 
-    # Step 3: Part detection (RF-DETR) on bg-removed image
+    # Step 3: Part detection (RF-DETR) on original frame
     rfdetr_engine = RFDETREngine(
         model_path=rfdetr_model_path,
         threshold=rfdetr_threshold,
     )
-    part_result = rfdetr_engine.detect_part(image_bgr_no_bg)
+    part_result = rfdetr_engine.detect_part(frame_bgr)
 
-    # Step 4: OCR on cropped part (crop is from bg-removed image)
+    # Step 4: OCR on cropped part
     ocr_result = None
     if part_result is not None:
         crop_bgr = part_result["crop"]
@@ -251,8 +250,8 @@ def run_single_frame(
             ocr_engine = OCR_Engine(model_dir=ocr_model_dir)
             ocr_result = ocr_engine.predict(crop_bgr)
 
-    # Build the response payload using bg-removed image as base
-    return _build_payload(image_bgr_no_bg, anomaly_result, part_result, ocr_result)
+    # Build the response payload
+    return _build_payload(frame_bgr, anomaly_result, part_result, ocr_result)
 
 
 def _build_payload(
@@ -273,7 +272,7 @@ def _build_payload(
     # Annotate anomaly heatmap and bounding boxes directly on the captured image
     annotated = image_bgr.copy()
     mask = anomaly.get("mask")
-    if isinstance(mask, np.ndarray) and mask.size > 0:
+    if isinstance(mask, np.ndarray) and mask.size > 0 and anomaly_count > 0:
         if len(mask.shape) == 3:
             mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
         if mask.shape[:2] != (image_h, image_w):
