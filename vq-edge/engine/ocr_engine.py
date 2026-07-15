@@ -28,14 +28,8 @@ class OCR_Engine:
             os.environ["PADDLE_PDX_MODEL_SOURCE"] = model_dir 
         
         self.ocr = PaddleOCR(
-            device="gpu:0",
-            engine="transformers",
-            use_doc_orientation_classify=False,
-            use_doc_unwarping=False,
-            use_textline_orientation=False,
-            engine_config={
-                "dtype": "float32",
-            },
+            lang="en",
+            enable_mkldnn=False,
         )
 
         dummy = np.full((64, 256, 3), 255, dtype=np.uint8)
