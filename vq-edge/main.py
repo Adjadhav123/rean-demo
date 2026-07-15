@@ -16,7 +16,8 @@ from fastapi import FastAPI
 
 from engine.anomaly_engine import AnomalyEngine
 from engine.rfdetr_engine import RFDETREngine
-from engine.ocr_engine import OCR_Engine
+# ✓ FIXED: Import corrected OCR engine and extraction helper
+from engine.ocr_engine import OCR_Engine, extract_ocr_lines
 
 
 # ---------------------------------------------------------------------------
@@ -150,83 +151,6 @@ def _encode_image_to_base64_png(image: np.ndarray | None) -> str | None:
     return base64.b64encode(encoded.tobytes()).decode("ascii")
 
 
-def _extract_ocr_lines(node: Any, min_confidence: float = 0.0) -> list[dict[str, Any]]:
-    """Walk OCR results and return [{text, score, box}, ...]."""
-    lines: list[dict[str, Any]] = []
-
-    def _parse_box(raw_box: Any) -> list[int] | None:
-        """Convert a polygon or rect box to [x1, y1, x2, y2]."""
-        try:
-            arr = np.array(raw_box)
-            if arr.ndim == 2:
-                return [
-                    int(arr[:, 0].min()), int(arr[:, 1].min()),
-                    int(arr[:, 0].max()), int(arr[:, 1].max()),
-                ]
-            if arr.ndim == 1 and len(arr) == 4:
-                return list(map(int, arr))
-        except Exception:
-            pass
-        return None
-
-    def walk(value: Any) -> None:
-        if isinstance(value, dict):
-            rec_texts = value.get("rec_texts")
-            rec_scores = value.get("rec_scores")
-            rec_boxes = value.get("rec_boxes")
-            if rec_boxes is None:
-                rec_boxes = value.get("dt_polys")
-            if rec_boxes is None:
-                rec_boxes = value.get("rec_polys")
-            if isinstance(rec_texts, list):
-                for idx, text in enumerate(rec_texts):
-                    if not isinstance(text, str):
-                        continue
-                    score = None
-                    if isinstance(rec_scores, list) and idx < len(rec_scores):
-                        try:
-                            score = float(rec_scores[idx])
-                        except Exception:
-                            score = None
-                    box = None
-                    if isinstance(rec_boxes, list) and idx < len(rec_boxes):
-                        box = _parse_box(rec_boxes[idx])
-                    lines.append({"text": text, "score": score, "box": box})
-
-            if isinstance(value.get("text"), str):
-                score = value.get("score")
-                try:
-                    score = float(score) if score is not None else None
-                except Exception:
-                    score = None
-                lines.append({"text": value["text"], "score": score, "box": None})
-
-            for child in value.values():
-                walk(child)
-            return
-
-        if isinstance(value, (list, tuple)):
-            for child in value:
-                walk(child)
-
-    walk(node)
-
-    deduped: list[dict[str, Any]] = []
-    seen: set[str] = set()
-    for line in lines:
-        text = line.get("text", "").strip()
-        if not text:
-            continue
-        key = f"{text}|{line.get('score')}"
-        if key in seen:
-            continue
-        seen.add(key)
-        deduped.append({"text": text, "score": line.get("score"), "box": line.get("box")})
-    if min_confidence > 0:
-        deduped = [line for line in deduped if line.get("score") is not None and line["score"] >= min_confidence]
-    return deduped
-
-
 # ---------------------------------------------------------------------------
 # Pipeline: single frame
 # ---------------------------------------------------------------------------
@@ -271,22 +195,25 @@ def run_single_frame(
     part_result = rfdetr_engine.detect_part(frame_bgr)
 
     # Step 4: OCR on cropped part
-    ocr_result = None
+    # ✓ FIXED: Use corrected OCR engine with proper configuration
+    ocr_lines = []
     if part_result is not None:
         crop_bgr = part_result["crop"]
         if crop_bgr.size > 0:
-            ocr_engine = OCR_Engine(model_dir=ocr_model_dir)
-            ocr_result = ocr_engine.predict(crop_bgr)
+            ocr_engine = OCR_Engine(model_dir=ocr_model_dir, device="gpu:0")
+            ocr_raw = ocr_engine.predict(crop_bgr)
+            # ✓ FIXED: Use extract_ocr_lines helper instead of broken _extract_ocr_lines
+            ocr_lines = extract_ocr_lines(ocr_raw, min_confidence=OCR_MIN_CONFIDENCE)
 
     # Build the response payload
-    return _build_payload(frame_bgr, anomaly_result, part_result, ocr_result)
+    return _build_payload(frame_bgr, anomaly_result, part_result, ocr_lines)
 
 
 def _build_payload(
     image_bgr: np.ndarray,
     anomaly_result: dict,
     part_result: dict | None,
-    ocr_raw: Any,
+    ocr_lines: list[dict[str, Any]],  # ✓ FIXED: Now expects structured list
 ) -> dict[str, Any]:
     """
     Build a JSON-serialisable payload from pipeline results.
@@ -303,16 +230,6 @@ def _build_payload(
     anomaly_score = float(anomaly.get("score", 0.0) or 0.0)
     anomaly_label = int(anomaly.get("label", 0) or 0)
 
-    ocr_lines = _extract_ocr_lines(ocr_raw, min_confidence=OCR_MIN_CONFIDENCE)
-
-    # Log OCR results to terminal for debugging
-    if ocr_lines:
-        print("\n--- OCR Results ---")
-        for i, line in enumerate(ocr_lines):
-            print(f"  [{i}] text={line['text']!r}  score={line.get('score'):.3f}  box={line.get('box')}")
-        print("-------------------\n")
-    else:
-        print("[OCR] No text detected above confidence threshold.")
 
     # ---- Build the annotated crop image ----
     has_crop = (
@@ -500,6 +417,8 @@ def _inspection_loop(state: InspectionState) -> None:
 
             except Exception as exc:
                 print(f"[Inspection Loop] Pipeline error on frame #{frame_count}: {exc}")
+                import traceback
+                traceback.print_exc()  # ✓ FIXED: Added traceback for debugging
                 error_result = _make_empty_result(error=f"Pipeline error: {exc}")
                 # Encode the raw frame so the user can at least see what was captured
                 error_result["capturedImageBase64"] = _encode_image_to_base64_png(frame_bgr)
