@@ -36,6 +36,7 @@ export interface InspectionResult {
   total: number;
   accepted: number;
   rejected: number;
+  frameNumber?: number;
 
   // This comes from the backend but will NOT be displayed in the UI.
   correctText?: string[];

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { Button, message } from "antd";
-import { CheckCircleFilled, PauseCircleFilled, PlayCircleFilled } from "@ant-design/icons";
+import { CheckCircleFilled, LeftOutlined, PauseCircleFilled, PlayCircleFilled } from "@ant-design/icons";
 import { useLocation, useNavigate } from "react-router-dom";
 import StatusIndicator from "../components/StatusIndicator";
 import SummaryCard from "../components/SummaryCard";
@@ -45,6 +45,8 @@ export default function LiveInspectionPage() {
   const [cameraStatus, setCameraStatus] = useState<"ready" | "waiting" | "detecting" | "not_ready">("waiting");
   const [cameraActive, setCameraActive] = useState(false);
   const [expectedTexts, setExpectedTexts] = useState<string[]>(() => loadExpectedTexts());
+  const [inspectionTotals, setInspectionTotals] = useState({ total: 0, accepted: 0, rejected: 0 });
+  const lastCountedFrameNumber = useRef(0);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -86,8 +88,22 @@ export default function LiveInspectionPage() {
           } else {
             setCameraStatus("ready");
           }
-        }
 
+          const frameNumber = typeof latestResult.frameNumber === "number" ? latestResult.frameNumber : 0;
+          if (frameNumber > 0 && frameNumber > lastCountedFrameNumber.current && !latestResult.error) {
+            const detectedTexts = latestResult.ocrLines.map((line) => line.text).filter(Boolean);
+            const frameMatches = matchExpectedTexts(expectedTexts, detectedTexts, true);
+            const frameAccepted = frameMatches.every((item) => item.status === "matched") ? 1 : 0;
+            const frameRejected = frameMatches.some((item) => item.status === "missing") ? 1 : 0;
+
+            setInspectionTotals((prev) => ({
+              total: prev.total + 1,
+              accepted: prev.accepted + frameAccepted,
+              rejected: prev.rejected + frameRejected,
+            }));
+            lastCountedFrameNumber.current = frameNumber;
+          }
+        }
         // Sync frontend status with backend status
         if (backendStatus === "paused") {
           setStatus("paused");
@@ -125,6 +141,10 @@ export default function LiveInspectionPage() {
     }
 
     try {
+      if (status !== "paused") {
+        setInspectionTotals({ total: 0, accepted: 0, rejected: 0 });
+        lastCountedFrameNumber.current = 0;
+      }
       setStatus("scanning");
       setCameraStatus("detecting");
       setResult(EMPTY_RESULT);
@@ -195,6 +215,10 @@ export default function LiveInspectionPage() {
     [detectedTexts, expectedTexts, inspectionComplete],
   );
 
+  const totalCount = inspectionTotals.total;
+  const acceptedCount = inspectionTotals.accepted;
+  const rejectedCount = inspectionTotals.rejected;
+
   const missingItems = useMemo(
     () =>
       textMatches
@@ -221,7 +245,14 @@ export default function LiveInspectionPage() {
           gap: 12,
         }}
       >
-        <div />
+        <Button
+          type="text"
+          icon={<LeftOutlined />}
+          onClick={() => navigate("/")}
+          style={{ padding: 0, fontSize: 14, color: "var(--vq-text)" }}
+        >
+          Back
+        </Button>
 
         <StatusIndicator label="Camera Status" status={cameraStatus} />
       </div>
@@ -246,7 +277,7 @@ export default function LiveInspectionPage() {
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "360px minmax(0, 1fr)",
+            gridTemplateColumns: "420px minmax(0, 1fr)",
             gap: 24,
             alignItems: "start",
           }}
@@ -254,23 +285,17 @@ export default function LiveInspectionPage() {
           {/* Left side */}
           <div
             style={{
-              width: 380,
-              display: "flex",
-              flexDirection: "column",
+              width: 420,
+              display: "grid",
+              gridTemplateColumns: "170px 1fr",
               gap: 16,
               minHeight: 460,
             }}
           >
-            <div
-              style={{
-                display: "grid",
-                gridTemplateColumns: "1fr",
-                gap: 12,
-              }}
-            >
-              <SummaryCard label="Total" value={result.total} color="var(--vq-text)" />
-              <SummaryCard label="Accepted" value={result.accepted} color="var(--vq-green)" />
-              <SummaryCard label="Rejected" value={result.rejected} color="var(--vq-red)" />
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <SummaryCard label="Total" value={totalCount} color="var(--vq-text)" />
+              <SummaryCard label="Accepted" value={acceptedCount} color="var(--vq-green)" />
+              <SummaryCard label="Rejected" value={rejectedCount} color="var(--vq-red)" />
             </div>
 
             <WrongTextCard items={missingItems} completed={inspectionComplete} />

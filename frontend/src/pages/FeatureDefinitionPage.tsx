@@ -1,27 +1,43 @@
 import { useEffect, useMemo, useState } from "react";
-import { ArrowRightOutlined, DeleteOutlined, PlusOutlined } from "@ant-design/icons";
-import { Button, Card, Input, Tag, message } from "antd";
+import { AppstoreOutlined, DeleteOutlined, PlusOutlined } from "@ant-design/icons";
+import { Button, Card, Input, message } from "antd";
 import { useNavigate } from "react-router-dom";
-import { clearExpectedTexts, parseExpectedTexts, saveExpectedTexts } from "../utils/expectedText";
-
-const HERO_HINTS = ["Type one value per line", "Paste comma-separated text", "Continue to live inspection"]; 
+import { loadExpectedTexts, parseExpectedTexts, saveExpectedTexts } from "../utils/expectedText";
 
 export default function FeatureDefinitionPage() {
   const navigate = useNavigate();
-  const [rawInput, setRawInput] = useState("");
+  const [features, setFeatures] = useState<string[]>([]);
+  const [isSaved, setIsSaved] = useState(false);
 
   useEffect(() => {
-    const saved = window.localStorage.getItem("vq-expected-texts-draft");
-    if (saved) {
-      setRawInput(saved);
+    const draft = window.localStorage.getItem("vq-expected-texts-draft");
+    const saved = loadExpectedTexts();
+    const savedFeatures = parseExpectedTexts(saved.join("\n"));
+
+    if (draft) {
+      const draftFeatures = parseExpectedTexts(draft);
+      setFeatures(draftFeatures);
+      setIsSaved(
+        draftFeatures.length === savedFeatures.length &&
+          draftFeatures.every((value, index) => value === savedFeatures[index]),
+      );
+    } else {
+      setFeatures(savedFeatures);
+      setIsSaved(savedFeatures.length > 0);
     }
   }, []);
 
   useEffect(() => {
-    window.localStorage.setItem("vq-expected-texts-draft", rawInput);
-  }, [rawInput]);
+    // persist a simple draft string to preserve UX across reloads
+    window.localStorage.setItem("vq-expected-texts-draft", features.join("\n"));
+  }, [features]);
 
-  const parsedTexts = useMemo(() => parseExpectedTexts(rawInput), [rawInput]);
+  const parsedTexts = useMemo(() => parseExpectedTexts(features.join("\n")), [features]);
+  const validFeatureCount = useMemo(
+    () => features.map((value) => value.trim()).filter(Boolean).length,
+    [features],
+  );
+  const canStartInspection = validFeatureCount > 0 && isSaved;
 
   function handleStartInspection() {
     if (parsedTexts.length === 0) {
@@ -34,10 +50,30 @@ export default function FeatureDefinitionPage() {
     navigate("/inspection", { state: { expectedTexts: parsedTexts } });
   }
 
-  function handleClear() {
-    setRawInput("");
-    clearExpectedTexts();
-    window.localStorage.removeItem("vq-expected-texts-draft");
+  function handleSave() {
+    const cleaned = parsedTexts;
+    try {
+      saveExpectedTexts(cleaned);
+      setIsSaved(true);
+      message.success("Features saved");
+    } catch (error) {
+      message.error("Failed to save features");
+    }
+  }
+
+  function addFeature() {
+    setFeatures((prev) => [...prev, ""]);
+    setIsSaved(false);
+  }
+
+  function updateFeature(index: number, value: string) {
+    setFeatures((prev) => prev.map((v, i) => (i === index ? value : v)));
+    setIsSaved(false);
+  }
+
+  function deleteFeature(index: number) {
+    setFeatures((prev) => prev.filter((_, i) => i !== index));
+    setIsSaved(false);
   }
 
   return (
@@ -62,142 +98,85 @@ export default function FeatureDefinitionPage() {
       >
         <div
           style={{
-            display: "flex",
-            justifyContent: "space-between",
-            alignItems: "center",
-            gap: 12,
             padding: "18px 24px",
             borderBottom: "1px solid var(--vq-border)",
-            background: "linear-gradient(90deg, rgba(21,104,224,0.04), rgba(26,158,74,0.03))",
+            background: "#ffffff",
+            display: "flex",
+            alignItems: "center",
           }}
         >
-          <div>
-            <div className="vq-eyebrow">Step 1 of 2</div>
-            <div style={{ fontSize: 22, fontWeight: 800, marginTop: 4 }}>Define expected text</div>
-          </div>
-
-          <div style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
-            {HERO_HINTS.map((hint) => (
-              <Tag key={hint} color="blue" style={{ margin: 0, padding: "4px 10px", borderRadius: 999, fontWeight: 600 }}>
-                {hint}
-              </Tag>
-            ))}
-          </div>
+          <div style={{ fontSize: 20, fontWeight: 800 }}>VisionQ OCR Inspection</div>
         </div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1.1fr 0.9fr", gap: 24, padding: 24 }}>
-          <Card
-            style={{ border: "1px solid var(--vq-border)", borderRadius: 20 }}
-            bodyStyle={{ padding: 24 }}
-          >
-            <div style={{ maxWidth: 650 }}>
-              <div className="vq-eyebrow">Inspection setup</div>
-              <h1 style={{ margin: "10px 0 12px", fontSize: 34, lineHeight: 1.05, letterSpacing: "-0.03em" }}>
-                Enter the exact text you want to validate on the part.
-              </h1>
-              <p style={{ margin: 0, color: "var(--vq-text-muted)", fontSize: 15, lineHeight: 1.7 }}>
-                The inspection page will compare live OCR output against this list and highlight any missing text in a red box.
-              </p>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr", gap: 24, padding: 24 }}>
+          <Card style={{ border: "1px solid #e6f0fb", borderRadius: 12, overflow: "hidden" }} bodyStyle={{ padding: 0 }}>
+            <div style={{ background: "#eaf6ff", padding: 14, borderBottom: "1px solid #d7ecff" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <div
+                    style={{
+                      width: 38,
+                      height: 38,
+                      borderRadius: 10,
+                      background: "#2f6be8",
+                      display: "flex",
+                      alignItems: "center",
+                      justifyContent: "center",
+                      color: "#fff",
+                      fontSize: 18,
+                    }}
+                  >
+                    <AppstoreOutlined />
+                  </div>
+                  <div style={{ fontSize: 16, fontWeight: 700 }}>Features</div>
+                </div>
+                <Button icon={<PlusOutlined />} onClick={addFeature} style={{ background: "#fff", border: "1px solid #cfe0ff" }}>
+                  Add Feature
+                </Button>
+              </div>
+            </div>
 
-              <div style={{ marginTop: 22 }}>
-                <Input.TextArea
-                  value={rawInput}
-                  onChange={(event) => setRawInput(event.target.value)}
-                  autoSize={{ minRows: 10, maxRows: 16 }}
-                  placeholder={"Example:\nPROTECTOR\nUNDER\nOVER\nSET\nDIFF"}
-                  style={{
-                    borderRadius: 18,
-                    borderColor: "var(--vq-border)",
-                    background: "#fbfdff",
-                    padding: 16,
-                    fontSize: 15,
-                    lineHeight: 1.7,
-                  }}
-                />
+            <div style={{ padding: 18, background: "#fff" }}>
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {features.length === 0 ? null : features.map((value, idx) => (
+                  <div key={idx} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <Input
+                      value={value}
+                      onChange={(e) => updateFeature(idx, e.target.value)}
+                      placeholder="Enter feature name"
+                      style={{ borderRadius: 8 }}
+                    />
+                    <Button danger icon={<DeleteOutlined />} onClick={() => deleteFeature(idx)} />
+                  </div>
+                ))}
               </div>
 
-              <div style={{ display: "flex", gap: 12, marginTop: 18, flexWrap: "wrap" }}>
+              <div style={{ display: "flex", gap: 12, marginTop: 20 }}>
                 <Button
-                  type="primary"
-                  icon={<ArrowRightOutlined />}
                   size="large"
-                  onClick={handleStartInspection}
-                  disabled={parsedTexts.length === 0}
-                  style={{ minWidth: 180 }}
+                  onClick={handleSave}
+                  disabled={validFeatureCount === 0}
+                  style={{
+                    minWidth: 120,
+                    background: validFeatureCount > 0 ? "#2f6be8" : undefined,
+                    color: validFeatureCount > 0 ? "#fff" : undefined,
+                    border: "none",
+                  }}
                 >
-                  Continue to inspection
+                  Save
                 </Button>
 
-                <Button icon={<DeleteOutlined />} size="large" onClick={handleClear}>
-                  Clear
+                <Button
+                  size="large"
+                  onClick={handleStartInspection}
+                  disabled={!canStartInspection}
+                  style={{ minWidth: 180, background: "#14a44d", color: "#fff", border: "none" }}
+                >
+                  Start Inspection
                 </Button>
               </div>
             </div>
           </Card>
-
-          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-            <Card style={{ border: "1px solid var(--vq-border)", borderRadius: 20 }} bodyStyle={{ padding: 20 }}>
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, marginBottom: 12 }}>
-                <div>
-                  <div className="vq-eyebrow">Preview</div>
-                  <div style={{ fontSize: 16, fontWeight: 800, marginTop: 4 }}>Parsed expected text</div>
-                </div>
-
-                <span style={{ fontSize: 12, fontWeight: 700, color: "var(--vq-blue)", background: "#edf4ff", border: "1px solid #cfe0ff", borderRadius: 999, padding: "4px 10px" }}>
-                  {parsedTexts.length} items
-                </span>
-              </div>
-
-              {parsedTexts.length === 0 ? (
-                <div style={{ border: "1px dashed var(--vq-border)", borderRadius: 14, padding: 18, color: "var(--vq-text-muted)", fontSize: 13 }}>
-                  Add the expected text on the left to see a live preview.
-                </div>
-              ) : (
-                <div style={{ display: "flex", flexWrap: "wrap", gap: 10 }}>
-                  {parsedTexts.map((text) => (
-                    <Tag
-                      key={text}
-                      color="green"
-                      style={{ margin: 0, padding: "7px 12px", borderRadius: 999, fontSize: 13, fontWeight: 700 }}
-                    >
-                      {text}
-                    </Tag>
-                  ))}
-                </div>
-              )}
-            </Card>
-
-            <Card style={{ border: "1px solid var(--vq-border)", borderRadius: 20 }} bodyStyle={{ padding: 20 }}>
-              <div className="vq-eyebrow">Workflow</div>
-              <div style={{ marginTop: 10, display: "grid", gap: 12 }}>
-                {[
-                  ["1", "Define the expected text list"],
-                  ["2", "Open the inspection page"],
-                  ["3", "Start inspection and compare OCR output"],
-                ].map(([step, label]) => (
-                  <div key={step} style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                    <div
-                      style={{
-                        width: 34,
-                        height: 34,
-                        borderRadius: 12,
-                        background: "linear-gradient(135deg, var(--vq-blue), var(--vq-green))",
-                        color: "#fff",
-                        display: "flex",
-                        alignItems: "center",
-                        justifyContent: "center",
-                        fontWeight: 800,
-                        flexShrink: 0,
-                      }}
-                    >
-                      {step}
-                    </div>
-                    <div style={{ fontSize: 14, fontWeight: 600, lineHeight: 1.5 }}>{label}</div>
-                  </div>
-                ))}
-              </div>
-            </Card>
-          </div>
         </div>
       </div>
     </div>
