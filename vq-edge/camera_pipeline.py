@@ -25,30 +25,20 @@ from main import (
 # or after re-triggering focus, before we trust any frame.
 FOCUS_SETTLE_SECONDS = 1.5
 
-# Number of candidate frames to compare (by sharpness) once settled.
-CANDIDATE_FRAMES = 5
-
-# Laplacian-variance threshold below which a frame is considered blurry.
-# This is scene-dependent — tune it against a few real captures. Printed
-# to the console on every capture so you can calibrate it.
-MIN_SHARPNESS = 60.0
-
-# If every candidate frame comes back blurry, how many extra times to
-# re-settle and try again before giving up.
-MAX_RETRIES = 2
+# How many frames to discard before trusting the next capture.
+WARMUP_FRAMES = 10
 
 
-def _sharpness_score(frame_bgr: np.ndarray) -> float:
-    """
-    Focus/sharpness metric: variance of the Laplacian. Higher = sharper.
-    Computed on a grayscale, moderately downscaled copy for speed.
-    """
-    gray = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2GRAY)
-    h, w = gray.shape[:2]
-    if max(h, w) > 1000:
-        scale = 1000 / max(h, w)
-        gray = cv2.resize(gray, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
-    return float(cv2.Laplacian(gray, cv2.CV_64F).var())
+def _open_camera(camera_index: int, width: int, height: int) -> cv2.VideoCapture:
+    """Open the camera using the same Windows-friendly settings as the working script."""
+    cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+    if not cap.isOpened():
+        raise RuntimeError(f"Unable to open camera index {camera_index}")
+
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
+    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+    return cap
 
 
 def _flush_buffer(cap: cv2.VideoCapture, n: int = 3) -> None:
@@ -61,28 +51,19 @@ def capture_image_from_camera(
     camera_index: int,
     width: int = CAMERA_WIDTH,
     height: int = CAMERA_HEIGHT,
-    warmup_frames: int = 10,
+    warmup_frames: int = WARMUP_FRAMES,
     settle_seconds: float = FOCUS_SETTLE_SECONDS,
-    candidate_frames: int = CANDIDATE_FRAMES,
-    min_sharpness: float = MIN_SHARPNESS,
-    max_retries: int = MAX_RETRIES,
 ) -> np.ndarray:
     """
-    Open the selected camera, set it to the target resolution, give
-    autofocus/auto-exposure time to settle, then grab several candidate
-    frames and keep the sharpest one.
+    Open the selected camera, set it to the target resolution, let
+    autofocus/auto-exposure settle, then grab the latest full-resolution
+    frame.
 
     Returns the captured frame as a BGR numpy array.
     """
-    cap = cv2.VideoCapture(camera_index)
-
-    if not cap.isOpened():
-        raise RuntimeError(f"Unable to open camera index {camera_index}")
+    cap = _open_camera(camera_index, width, height)
 
     try:
-        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-        cap.set(cv2.CAP_PROP_FRAME_WIDTH, width)
-        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, height)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
 
@@ -93,45 +74,15 @@ def capture_image_from_camera(
         for _ in range(max(0, warmup_frames)):
             cap.read()
 
-        best_frame: np.ndarray | None = None
-        best_score = -1.0
+        time.sleep(settle_seconds)
+        _flush_buffer(cap)
 
-        for attempt in range(max_retries + 1):
-            # Let autofocus / auto-exposure converge before trusting frames.
-            time.sleep(settle_seconds)
-            _flush_buffer(cap)
-
-            for _ in range(candidate_frames):
-                ok, frame_bgr = cap.read()
-                if not ok or frame_bgr is None:
-                    continue
-                score = _sharpness_score(frame_bgr)
-                if score > best_score:
-                    best_score = score
-                    best_frame = frame_bgr
-
-            print(f"[Camera] Attempt {attempt + 1}: best sharpness score = {best_score:.1f}")
-
-            if best_score >= min_sharpness:
-                break
-
-            if attempt < max_retries:
-                print("[Camera] Frame below sharpness threshold, re-triggering focus and retrying...")
-                # Re-trigger autofocus by toggling it off/on.
-                cap.set(cv2.CAP_PROP_AUTOFOCUS, 0)
-                cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
-
-        if best_frame is None:
+        ok, frame_bgr = cap.read()
+        if not ok or frame_bgr is None:
             raise RuntimeError(f"Failed to capture any frame from camera index {camera_index}")
 
-        if best_score < min_sharpness:
-            print(
-                f"[Camera] Warning: best frame scored {best_score:.1f}, "
-                f"below the sharpness threshold of {min_sharpness:.1f}. Using it anyway."
-            )
-
-        print(f"[Camera] Captured frame at {actual_w}x{actual_h} (sharpness={best_score:.1f})")
-        return best_frame
+        print(f"[Camera] Captured frame at {actual_w}x{actual_h}")
+        return frame_bgr
     finally:
         cap.release()
 
@@ -153,8 +104,6 @@ def capture_and_run(
     camera_index: int = 0,
     output_image_path: str | Path | None = None,
     settle_seconds: float = FOCUS_SETTLE_SECONDS,
-    candidate_frames: int = CANDIDATE_FRAMES,
-    min_sharpness: float = MIN_SHARPNESS,
 ) -> dict:
     """
     Capture one high-resolution frame from the camera and hand it off to
@@ -164,8 +113,6 @@ def capture_and_run(
     frame_bgr = capture_image_from_camera(
         camera_index=camera_index,
         settle_seconds=settle_seconds,
-        candidate_frames=candidate_frames,
-        min_sharpness=min_sharpness,
     )
 
     if output_image_path is not None:
@@ -201,28 +148,29 @@ def parse_args() -> argparse.Namespace:
         help="Seconds to wait for autofocus/auto-exposure to settle (default: %(default)s)",
     )
     parser.add_argument(
-        "--candidate-frames",
-        type=int,
-        default=CANDIDATE_FRAMES,
-        help="Number of frames to compare by sharpness per attempt (default: %(default)s)",
-    )
-    parser.add_argument(
-        "--min-sharpness",
-        type=float,
-        default=MIN_SHARPNESS,
-        help="Laplacian-variance sharpness threshold (default: %(default)s)",
+        "--auto-run",
+        action="store_true",
+        help="Capture immediately and run the pipeline without waiting for manual input",
     )
     return parser.parse_args()
 
 
 def main() -> None:
     args = parse_args()
+    if args.auto_run:
+        result = capture_and_run(
+            camera_index=args.camera_index,
+            output_image_path=args.output_image_path,
+            settle_seconds=args.settle_seconds,
+        )
+        print("Pipeline result:")
+        print(result)
+        return
+
     result = capture_and_run(
         camera_index=args.camera_index,
         output_image_path=args.output_image_path,
         settle_seconds=args.settle_seconds,
-        candidate_frames=args.candidate_frames,
-        min_sharpness=args.min_sharpness,
     )
     print("Pipeline result:")
     print(result)

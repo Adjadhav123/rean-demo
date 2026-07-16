@@ -43,11 +43,54 @@ CAMERA_HEIGHT = 2160
 # How long to wait between successive pipeline runs (seconds).
 LOOP_INTERVAL = 0.5
 
+# Camera capture tuning.
+FOCUS_SETTLE_SECONDS = 1.5
+WARMUP_FRAMES = 10
+
 # ---------------------------------------------------------------------------
 # Global state
 # ---------------------------------------------------------------------------
 rembg_session = new_session()
 app = FastAPI(title="VQ Edge Inspection Backend", version="1.0.0")
+
+
+def _flush_buffer(cap: cv2.VideoCapture, n: int = 3) -> None:
+    """Discard buffered frames so the next read is current."""
+    for _ in range(n):
+        cap.grab()
+
+
+def _open_camera(camera_index: int) -> cv2.VideoCapture:
+    """Open the camera with the same Windows-friendly settings as the sample script."""
+    cap = cv2.VideoCapture(camera_index, cv2.CAP_DSHOW)
+    if not cap.isOpened():
+        raise RuntimeError(f"Camera not available (index {camera_index})")
+
+    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
+    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
+    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
+    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+    cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)
+    return cap
+
+
+def _capture_latest_frame(
+    cap: cv2.VideoCapture,
+    settle_seconds: float = FOCUS_SETTLE_SECONDS,
+    warmup_frames: int = WARMUP_FRAMES,
+) -> np.ndarray:
+    """Warm the camera, then return the latest full-resolution frame."""
+    for _ in range(max(0, warmup_frames)):
+        cap.read()
+
+    time.sleep(settle_seconds)
+    _flush_buffer(cap)
+
+    ok, frame_bgr = cap.read()
+    if not ok or frame_bgr is None:
+        raise RuntimeError("Failed to capture a frame from the camera")
+
+    return frame_bgr
 
 
 class InspectionState:
@@ -288,6 +331,53 @@ def _ocr_lines_to_boxes(
     return boxes
 
 
+def _build_ocr_focus_image(
+    crop_bgr: np.ndarray,
+    ocr_lines: list[dict[str, Any]],
+    min_display_side: int = 900,
+    margin_ratio: float = 0.12,
+) -> np.ndarray:
+    """Crop the image to the OCR text region and upscale it only for display if needed."""
+    if crop_bgr.size == 0:
+        return crop_bgr
+
+    focus = crop_bgr
+    h, w = focus.shape[:2]
+
+    if ocr_lines:
+        boxes: list[tuple[int, int, int, int]] = []
+        for line in ocr_lines:
+            normalized = _normalize_bbox(line.get("box"), w, h)
+            if normalized is not None:
+                boxes.append(normalized)
+
+        if boxes:
+            x1 = min(box[0] for box in boxes)
+            y1 = min(box[1] for box in boxes)
+            x2 = max(box[2] for box in boxes)
+            y2 = max(box[3] for box in boxes)
+
+            pad_x = max(8, int((x2 - x1) * margin_ratio))
+            pad_y = max(8, int((y2 - y1) * margin_ratio))
+
+            x1 = max(0, x1 - pad_x)
+            y1 = max(0, y1 - pad_y)
+            x2 = min(w, x2 + pad_x)
+            y2 = min(h, y2 + pad_y)
+
+            if x2 > x1 and y2 > y1:
+                focus = focus[y1:y2, x1:x2]
+
+    focus_h, focus_w = focus.shape[:2]
+    if max(focus_h, focus_w) < min_display_side:
+        scale = min_display_side / max(1, max(focus_h, focus_w))
+        new_w = int(round(focus_w * scale))
+        new_h = int(round(focus_h * scale))
+        focus = cv2.resize(focus, (new_w, new_h), interpolation=cv2.INTER_CUBIC)
+
+    return focus
+
+
 # ---------------------------------------------------------------------------
 # Pipeline: single frame
 # ---------------------------------------------------------------------------
@@ -421,7 +511,8 @@ def _build_payload(
 
         boxes = _ocr_lines_to_boxes(ocr_lines, crop_w, crop_h)
 
-        captured_image_b64 = _encode_image_to_base64_png(annotated)
+        ui_image = _build_ocr_focus_image(annotated, ocr_lines)
+        captured_image_b64 = _encode_image_to_base64_png(ui_image)
         print("[Build Payload] Annotated crop encoded to PNG and base64")
     else:
         # No crop available — show the raw camera frame
@@ -493,29 +584,20 @@ def _inspection_loop(state: InspectionState) -> None:
     The camera stays open for the entire session (no open/close per frame).
     """
     print(f"[Inspection Loop] Opening camera index {CAMERA_INDEX}...")
-    cap = cv2.VideoCapture(CAMERA_INDEX)
-
-    if not cap.isOpened():
-        error_msg = f"Camera not available (index {CAMERA_INDEX})"
+    try:
+        cap = _open_camera(CAMERA_INDEX)
+    except RuntimeError as exc:
+        error_msg = str(exc)
         print(f"[Inspection Loop] {error_msg}")
         state.latest_result = _make_empty_result(error=error_msg)
         state.status = "idle"
         return
 
-    # Set 4K resolution and optimal capture settings
-    cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*"MJPG"))
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, CAMERA_WIDTH)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, CAMERA_HEIGHT)
-    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)   # Always grab the latest frame
-    cap.set(cv2.CAP_PROP_AUTOFOCUS, 1)    # Enable autofocus
-
     actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
     actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
     print(f"[Inspection Loop] Camera resolution: {actual_w}x{actual_h}")
 
-    # Warmup frames (let auto-exposure settle)
-    for _ in range(10):
-        cap.read()
+    print("[Inspection Loop] Settling autofocus/auto-exposure...")
 
     print("[Inspection Loop] Camera ready. Starting continuous inspection...")
     frame_count = 0
@@ -527,9 +609,10 @@ def _inspection_loop(state: InspectionState) -> None:
             if state.should_stop:
                 break
 
-            ok, frame_bgr = cap.read()
-            if not ok or frame_bgr is None:
-                print("[Inspection Loop] Failed to capture frame, retrying...")
+            try:
+                frame_bgr = _capture_latest_frame(cap)
+            except RuntimeError as exc:
+                print(f"[Inspection Loop] {exc}")
                 time.sleep(0.5)
                 continue
 

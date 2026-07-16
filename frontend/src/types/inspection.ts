@@ -8,6 +8,12 @@ export interface OcrLine {
   score: number | null;
 }
 
+export interface ExpectedTextMatch {
+  expectedText: string;
+  status: "matched" | "missing" | "pending";
+  detectedText?: string | null;
+}
+
 export interface AnomalyView {
   label: number;
   score: number;

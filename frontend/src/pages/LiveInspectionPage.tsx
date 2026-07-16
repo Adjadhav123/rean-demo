@@ -1,6 +1,7 @@
-import { useEffect, useRef, useState, useCallback } from "react";
+import { useEffect, useMemo, useRef, useState, useCallback } from "react";
 import { Button, message } from "antd";
 import { CheckCircleFilled, PauseCircleFilled, PlayCircleFilled } from "@ant-design/icons";
+import { useLocation, useNavigate } from "react-router-dom";
 import StatusIndicator from "../components/StatusIndicator";
 import SummaryCard from "../components/SummaryCard";
 import WrongTextCard from "../components/WrongTextCard";
@@ -13,8 +14,13 @@ import {
   getLatestInspection,
 } from "../services/api";
 import type { InspectionResult, ScanStatus } from "../types/inspection";
+import { loadExpectedTexts, matchExpectedTexts, saveExpectedTexts } from "../utils/expectedText";
 
 const POLL_INTERVAL_MS = 1500;
+
+type InspectionLocationState = {
+  expectedTexts?: string[];
+};
 
 const EMPTY_RESULT: InspectionResult = {
   total: 0,
@@ -32,11 +38,25 @@ const EMPTY_RESULT: InspectionResult = {
 };
 
 export default function LiveInspectionPage() {
+  const location = useLocation();
+  const navigate = useNavigate();
   const [status, setStatus] = useState<ScanStatus>("idle");
   const [result, setResult] = useState<InspectionResult>(EMPTY_RESULT);
   const [cameraStatus, setCameraStatus] = useState<"ready" | "waiting" | "detecting" | "not_ready">("waiting");
   const [cameraActive, setCameraActive] = useState(false);
+  const [expectedTexts, setExpectedTexts] = useState<string[]>(() => loadExpectedTexts());
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  useEffect(() => {
+    const state = location.state as InspectionLocationState | null;
+    if (state?.expectedTexts?.length) {
+      const cleaned = state.expectedTexts.map((text) => text.trim()).filter(Boolean);
+      setExpectedTexts(cleaned);
+      saveExpectedTexts(cleaned);
+    } else {
+      setExpectedTexts(loadExpectedTexts());
+    }
+  }, [location.state]);
 
   // -----------------------------------------------------------------------
   // Polling: fetch the latest result from the backend every POLL_INTERVAL_MS
@@ -97,6 +117,12 @@ export default function LiveInspectionPage() {
   // -----------------------------------------------------------------------
   async function handleStart() {
     if (status === "scanning") return;
+
+    if (expectedTexts.length === 0) {
+      message.error("Define at least one expected text before starting inspection.");
+      navigate("/");
+      return;
+    }
 
     try {
       setStatus("scanning");
@@ -162,6 +188,24 @@ export default function LiveInspectionPage() {
           ? "#4F8EF7"
           : "#94a3b8";
 
+  const detectedTexts = useMemo(() => result.ocrLines.map((line) => line.text).filter(Boolean), [result.ocrLines]);
+  const inspectionComplete = detectedTexts.length > 0;
+  const textMatches = useMemo(
+    () => matchExpectedTexts(expectedTexts, detectedTexts, inspectionComplete),
+    [detectedTexts, expectedTexts, inspectionComplete],
+  );
+
+  const missingItems = useMemo(
+    () =>
+      textMatches
+        .filter((item) => item.status === "missing")
+        .map((item) => ({
+          text: item.expectedText,
+          reason: item.detectedText ? `Detected as ${item.detectedText}` : "Not detected in OCR",
+        })),
+    [textMatches],
+  );
+
   return (
     <div style={{ minHeight: "100%", background: "var(--vq-bg)" }}>
       {/* Header */}
@@ -202,7 +246,7 @@ export default function LiveInspectionPage() {
         <div
           style={{
             display: "grid",
-            gridTemplateColumns: "380px minmax(0, 1fr)",
+            gridTemplateColumns: "360px minmax(0, 1fr)",
             gap: 24,
             alignItems: "start",
           }}
@@ -213,39 +257,23 @@ export default function LiveInspectionPage() {
               width: 380,
               display: "flex",
               flexDirection: "column",
-              gap: 20,
+              gap: 16,
               minHeight: 460,
             }}
           >
             <div
               style={{
                 display: "grid",
-                gridTemplateColumns: "1fr 1.6fr",
-                gap: 20,
-                alignItems: "start",
+                gridTemplateColumns: "1fr",
+                gap: 12,
               }}
             >
-              <div>
-                <div className="vq-eyebrow" style={{ marginBottom: 10 }}>
-                  Inspection Summary
-                </div>
-                <div
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: 12,
-                  }}
-                >
-                  <SummaryCard label="Total" value={result.total} color="var(--vq-text)" />
-                  <SummaryCard label="Accepted" value={result.accepted} color="var(--vq-green)" />
-                  <SummaryCard label="Rejected" value={result.rejected} color="var(--vq-red)" />
-                </div>
-              </div>
-
-              <div style={{ minWidth: 0 }}>
-                <WrongTextCard items={result.wrongText} />
-              </div>
+              <SummaryCard label="Total" value={result.total} color="var(--vq-text)" />
+              <SummaryCard label="Accepted" value={result.accepted} color="var(--vq-green)" />
+              <SummaryCard label="Rejected" value={result.rejected} color="var(--vq-red)" />
             </div>
+
+            <WrongTextCard items={missingItems} completed={inspectionComplete} />
           </div>
 
           {/* Right side */}
