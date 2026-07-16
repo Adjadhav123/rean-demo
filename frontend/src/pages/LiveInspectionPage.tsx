@@ -47,6 +47,7 @@ export default function LiveInspectionPage() {
   const [expectedTexts, setExpectedTexts] = useState<string[]>(() => loadExpectedTexts());
   const [inspectionTotals, setInspectionTotals] = useState({ total: 0, accepted: 0, rejected: 0 });
   const lastCountedFrameNumber = useRef(0);
+  const rejectionHandledRef = useRef(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
@@ -90,17 +91,33 @@ export default function LiveInspectionPage() {
           }
 
           const frameNumber = typeof latestResult.frameNumber === "number" ? latestResult.frameNumber : 0;
-          if (frameNumber > 0 && frameNumber > lastCountedFrameNumber.current && !latestResult.error) {
-            const detectedTexts = latestResult.ocrLines.map((line) => line.text).filter(Boolean);
-            const frameMatches = matchExpectedTexts(expectedTexts, detectedTexts, true);
-            const frameAccepted = frameMatches.every((item) => item.status === "matched") ? 1 : 0;
-            const frameRejected = frameMatches.some((item) => item.status === "missing") ? 1 : 0;
+          const detectedTexts = latestResult.ocrLines.map((line) => line.text).filter(Boolean);
+          const frameMatches = matchExpectedTexts(expectedTexts, detectedTexts, true);
+          const isRejected = detectedTexts.length > 0 && frameMatches.some((item) => item.status === "missing");
+          const isAccepted = detectedTexts.length > 0 && frameMatches.every((item) => item.status === "matched");
 
-            setInspectionTotals((prev) => ({
-              total: prev.total + 1,
-              accepted: prev.accepted + frameAccepted,
-              rejected: prev.rejected + frameRejected,
-            }));
+          if (frameNumber > 0 && frameNumber > lastCountedFrameNumber.current && !latestResult.error && detectedTexts.length > 0) {
+            if (isAccepted) {
+              setInspectionTotals((prev) => ({
+                total: prev.total + 1,
+                accepted: prev.accepted + 1,
+                rejected: prev.rejected,
+              }));
+            } else if (isRejected && !rejectionHandledRef.current) {
+              setInspectionTotals((prev) => ({
+                total: prev.total + 1,
+                accepted: prev.accepted,
+                rejected: prev.rejected + 1,
+              }));
+              rejectionHandledRef.current = true;
+              setStatus("paused");
+              setCameraStatus("waiting");
+              stopPolling();
+              void pauseInspection().catch(() => {
+                // Keep the current result visible and stop further processing.
+              });
+            }
+
             lastCountedFrameNumber.current = frameNumber;
           }
         }
@@ -144,6 +161,7 @@ export default function LiveInspectionPage() {
       if (status !== "paused") {
         setInspectionTotals({ total: 0, accepted: 0, rejected: 0 });
         lastCountedFrameNumber.current = 0;
+        rejectionHandledRef.current = false;
       }
       setStatus("scanning");
       setCameraStatus("detecting");
