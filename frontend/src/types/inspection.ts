@@ -53,4 +53,4 @@ export interface InspectionResult {
   error?: string;
 }
 
-export type ScanStatus = "idle" | "scanning" | "paused" | "finished";
+export type ScanStatus = "idle" | "scanning" | "paused" | "finished" | "rejected";

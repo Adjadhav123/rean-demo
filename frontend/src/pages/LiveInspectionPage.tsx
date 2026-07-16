@@ -110,7 +110,7 @@ export default function LiveInspectionPage() {
                 rejected: prev.rejected + 1,
               }));
               rejectionHandledRef.current = true;
-              setStatus("paused");
+              setStatus("rejected");
               setCameraStatus("waiting");
               stopPolling();
               void pauseInspection().catch(() => {
@@ -159,7 +159,6 @@ export default function LiveInspectionPage() {
 
     try {
       if (status !== "paused") {
-        setInspectionTotals({ total: 0, accepted: 0, rejected: 0 });
         lastCountedFrameNumber.current = 0;
         rejectionHandledRef.current = false;
       }
@@ -215,7 +214,9 @@ export default function LiveInspectionPage() {
         ? "SCAN PAUSED — ANOMALY DETECTED"
         : status === "finished"
           ? "SCAN FINISHED"
-          : "SCAN IDLE";
+          : status === "rejected"
+            ? "REJECTED"
+            : "SCAN IDLE";
 
   const bannerColor =
     status === "scanning"
@@ -224,7 +225,9 @@ export default function LiveInspectionPage() {
         ? "#d48806"
         : status === "finished"
           ? "#4F8EF7"
-          : "#94a3b8";
+          : status === "rejected"
+            ? "#dc2626"
+            : "#94a3b8";
 
   const detectedTexts = useMemo(() => result.ocrLines.map((line) => line.text).filter(Boolean), [result.ocrLines]);
   const inspectionComplete = detectedTexts.length > 0;
@@ -337,6 +340,7 @@ export default function LiveInspectionPage() {
               active={cameraActive}
               capturedImageBase64={result.capturedImageBase64}
               anomaly={result.anomaly}
+              boxes={result.boxes}
             />
 
             <div

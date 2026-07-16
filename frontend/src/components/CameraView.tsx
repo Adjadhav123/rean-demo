@@ -1,12 +1,13 @@
-import type { AnomalyView } from "../types/inspection";
+import type { AnomalyView, BoundingBox } from "../types/inspection";
 
 interface CameraViewProps {
   active: boolean;
   capturedImageBase64?: string | null;
   anomaly?: AnomalyView;
+  boxes?: BoundingBox[];
 }
 
-export default function CameraView({ active, capturedImageBase64, anomaly }: CameraViewProps) {
+export default function CameraView({ active, capturedImageBase64, anomaly, boxes = [] }: CameraViewProps) {
   const hasImage = !!capturedImageBase64;
 
   return (
@@ -36,6 +37,34 @@ style={{
             objectFit: "contain",
           }}
         />
+      )}
+
+      {/* OCR bounding boxes overlay */}
+      {hasImage && boxes.length > 0 && (
+        <div
+          style={{
+            position: "absolute",
+            inset: 0,
+            zIndex: 8,
+            pointerEvents: "none",
+          }}
+        >
+          {boxes.map((box) => (
+            <div
+              key={box.id}
+              style={{
+                position: "absolute",
+                left: `${box.left}%`,
+                top: `${box.top}%`,
+                width: `${box.width}%`,
+                height: `${box.height}%`,
+                border: "2px solid rgba(248, 113, 113, 0.95)",
+                borderRadius: 4,
+                boxShadow: "0 0 0 1px rgba(15, 23, 42, 0.2) inset",
+              }}
+            />
+          ))}
+        </div>
       )}
 
       {/* Anomaly status badge */}
