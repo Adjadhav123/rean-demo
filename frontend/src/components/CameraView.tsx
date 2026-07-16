@@ -58,9 +58,8 @@ style={{
                 top: `${box.top}%`,
                 width: `${box.width}%`,
                 height: `${box.height}%`,
-                border: "2px solid rgba(248, 113, 113, 0.95)",
+                border: "2px solid rgba(34, 197, 94, 0.95)",
                 borderRadius: 4,
-                boxShadow: "0 0 0 1px rgba(15, 23, 42, 0.2) inset",
               }}
             />
           ))}

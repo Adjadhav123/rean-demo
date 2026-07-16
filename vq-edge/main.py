@@ -261,41 +261,6 @@ def _annotate_ocr_lines(
             # Draw green rectangle around detected text
             cv2.rectangle(annotated, (bx1, by1), (bx2, by2), (0, 255, 0), 2)
             
-            # Prepare label text with confidence score if available
-            label = text
-            if score is not None:
-                label = f"{text} ({score:.2f})"
-            
-            # Draw semi-transparent background for text readability
-            font = cv2.FONT_HERSHEY_SIMPLEX
-            font_scale = 0.5
-            thickness = 1
-            (text_w, text_h), baseline = cv2.getTextSize(label, font, font_scale, thickness)
-            
-            # Position text above the box
-            text_x = bx1
-            text_y = max(by1 - 5, 15)
-            
-            # Draw black background for text
-            cv2.rectangle(
-                annotated,
-                (text_x - 2, text_y - text_h - 2),
-                (text_x + text_w + 2, text_y + baseline + 2),
-                (0, 0, 0),
-                -1
-            )
-            
-            # Draw white text
-            cv2.putText(
-                annotated, 
-                label,
-                (text_x, text_y),
-                font, 
-                font_scale, 
-                (255, 255, 255), 
-                thickness
-            )
-            
         except Exception as e:
             print(f"[OCR Annotation] Error drawing box {box}: {e}")
             continue
