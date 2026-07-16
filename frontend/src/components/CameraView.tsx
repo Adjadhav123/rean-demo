@@ -39,33 +39,6 @@ style={{
         />
       )}
 
-      {/* OCR bounding boxes overlay */}
-      {hasImage && boxes.length > 0 && (
-        <div
-          style={{
-            position: "absolute",
-            inset: 0,
-            zIndex: 8,
-            pointerEvents: "none",
-          }}
-        >
-          {boxes.map((box) => (
-            <div
-              key={box.id}
-              style={{
-                position: "absolute",
-                left: `${box.left}%`,
-                top: `${box.top}%`,
-                width: `${box.width}%`,
-                height: `${box.height}%`,
-                border: "2px solid rgba(34, 197, 94, 0.95)",
-                borderRadius: 4,
-              }}
-            />
-          ))}
-        </div>
-      )}
-
       {/* Anomaly status badge */}
       {anomaly && hasImage && (
         <div
