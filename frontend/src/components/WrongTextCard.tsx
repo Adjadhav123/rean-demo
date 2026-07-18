@@ -71,14 +71,8 @@ export default function WrongTextCard({ items, completed = true }: WrongTextCard
                   <div style={{ fontSize: 15, fontWeight: 700, color: "var(--vq-text)", wordBreak: "break-word" }}>
                     {item.text}
                   </div>
-                  <div style={{ marginTop: 4, fontSize: 12, color: "var(--vq-red)", fontWeight: 700 }}>
-                    MISSING TEXT
-                  </div>
                 </div>
               </div>
-              <span style={{ fontSize: 12, color: "var(--vq-red)", fontWeight: 700, whiteSpace: "nowrap" }}>
-                {item.reason}
-              </span>
             </div>
           ))}
         </div>
