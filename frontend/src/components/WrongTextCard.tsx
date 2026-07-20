@@ -80,3 +80,4 @@ export default function WrongTextCard({ items, completed = true }: WrongTextCard
     </Card>
   );
 }
+
